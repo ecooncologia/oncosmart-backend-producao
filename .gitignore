@@ -1,0 +1,16 @@
+# Senhas e Variáveis de Ambiente
+.env
+google-credentials.json
+
+# Certificados de Segurança SSL
+*.pem
+
+# Dependências
+node_modules/
+
+# Arquivos Temporários e Planilhas
+downloads_unimed/
+*.log
+*.sql
+*.tgz
+cloudflared-linux-amd64
