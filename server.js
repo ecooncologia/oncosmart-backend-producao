@@ -5,6 +5,7 @@ const mysql = require('mysql2/promise');
 const cors = require('cors');
 const https = require('https');
 const fs = require('fs');
+const path = require('path'); // 🆕 NOVO - Necessário para montar caminho dos prints
 const nodemailer = require('nodemailer');
 
 // 1. IMPORTANDO O MOTOR DO ORACLE
@@ -24,6 +25,10 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// 🆕 NOVO - Servir prints do robô Unimed como arquivos estáticos
+// Faz o link "Ver Print da Guia" no HTML funcionar (Ex: /prints/print_unimed_123456.png)
+app.use('/prints', express.static('~/api-eco-teste/public/prints'));
 
 const CHAVE_MESTRA = process.env.CHAVE_MESTRA; // 🔒 Puxando do .env
 const rotasAbertas = ['/avaliar', '/webhook-review', '/registrar_ponto', '/webhook-ata']; 
@@ -179,7 +184,7 @@ app.post('/protocolos/init-tables', async (req, res) => {
             cd_estabelecimento VARCHAR(50),
             seq_protocolo VARCHAR(50),
             cd_protocolo VARCHAR(255),
-            nr_seq_subtipo VARCHAR(50) UNIQUE,
+            nr_seq_subtipo VARCHAR(50),
             nm_protocolo VARCHAR(255),
             nm_subtipo VARCHAR(255),
             nr_ciclos VARCHAR(50), 
@@ -219,7 +224,6 @@ app.get('/protocolos/sync-tasy', async (req, res) => {
         connection = await oracledb.getConnection(dbConfigOracle);
         console.log("[1/4] Conectado ao Oracle com sucesso.");
         
-        // 💡 CORREÇÃO: Buscando DIRETO DA VIEW tasy.protocolos_eco em vez das tabelas base!
         const oracleSql = `
             SELECT 
                 CD_ESTABELECIMENTO,
@@ -235,41 +239,52 @@ app.get('/protocolos/sync-tasy', async (req, res) => {
         `;
         
         console.log("[2/4] Executando Query na View TASY.PROTOCOLOS_ECO...");
-        const resultOracle = await connection.execute(oracleSql);
-        console.log(`[2/4] Query finalizada. Retornou ${resultOracle.rows ? resultOracle.rows.length : 0} linhas.`);
+        
+        const resultOracle = await connection.execute(oracleSql, [], {
+            maxRows: 10000 
+        });
+        
+        console.log(`[2/4] Query finalizada. Retornou ${resultOracle?.rows?.length || 0} linhas.`);
 
         let inserted = 0;
+
         if (resultOracle.rows && resultOracle.rows.length > 0) {
             console.log("[3/4] Inserindo dados no MySQL...");
             for (let i = 0; i < resultOracle.rows.length; i++) {
                 let row = resultOracle.rows[i];
+                
+                // 🛡️ BLINDAGEM MÁXIMA: Se a linha vier vazia do Oracle, pula para a próxima sem travar
+                if (!row) continue;
+                
+                const cd_estabelecimento = row.CD_ESTABELECIMENTO ?? row[0] ?? null;
+                const seq_protocolo = row.SEQ_PROTOCOLO ?? row[1] ?? null;
+                const cd_protocolo = row.CD_PROTOCOLO ?? row[2] ?? null;
+                const nr_seq_subtipo = row.NR_SEQ_SUBTIPO ?? row[3] ?? null;
+                const nm_protocolo = row.NM_PROTOCOLO ?? row[4] ?? null;
+                const nm_subtipo = row.NM_SUBTIPO ?? row[5] ?? null;
+                const nr_ciclos = row.NR_CICLOS ?? row[6] ?? null;
+                const nr_dias_intervalo = row.NR_DIAS_INTERVALO ?? row[7] ?? null;
+                const nm_usuario = row.NM_USUARIO ?? row[8] ?? null;
+
                 try {
+                    // INSERÇÃO BRUTA: Cada linha gera um ID novo no MySQL.
                     await pool.query(
                         `INSERT INTO protocolos 
                         (cd_estabelecimento, seq_protocolo, cd_protocolo, nr_seq_subtipo, nm_protocolo, nm_subtipo, nr_ciclos, nr_dias_intervalo, nm_usuario) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON DUPLICATE KEY UPDATE 
-                        cd_estabelecimento=VALUES(cd_estabelecimento), seq_protocolo=VALUES(seq_protocolo), cd_protocolo=VALUES(cd_protocolo), nm_protocolo=VALUES(nm_protocolo), nm_subtipo=VALUES(nm_subtipo), nr_ciclos=VALUES(nr_ciclos), nr_dias_intervalo=VALUES(nr_dias_intervalo), nm_usuario=VALUES(nm_usuario)`,
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                         [
-                            row.CD_ESTABELECIMENTO, 
-                            row.SEQ_PROTOCOLO, 
-                            row.CD_PROTOCOLO, 
-                            row.NR_SEQ_SUBTIPO, 
-                            row.NM_PROTOCOLO, 
-                            row.NM_SUBTIPO, 
-                            row.NR_CICLOS, 
-                            row.NR_DIAS_INTERVALO, 
-                            row.NM_USUARIO
+                            cd_estabelecimento, seq_protocolo, cd_protocolo, nr_seq_subtipo, 
+                            nm_protocolo, nm_subtipo, nr_ciclos, nr_dias_intervalo, nm_usuario
                         ]
                     );
                     inserted++;
+
                 } catch(mysqlErr) {
-                    console.error(`❌ [MySQL] Falha ao inserir linha. Dados:`, row);
-                    console.error(`Detalhe do erro MySQL:`, mysqlErr.message);
-                    throw mysqlErr; 
+                    console.error(`⚠️ [MySQL] Falha silenciosa ao inserir linha ${i}. Erro:`, mysqlErr.message);
+                    // Erros individuais não travam mais a sincronização inteira
                 }
             }
-            console.log(`[4/4] Inserção concluída! Processados: ${inserted}.`);
+            console.log(`[4/4] Inserção concluída! Total inserido: ${inserted}. Total lido: ${resultOracle.rows.length}`);
         }
         res.json({ success: true, total: resultOracle.rows ? resultOracle.rows.length : 0, inserted });
     } catch (err) {
@@ -553,6 +568,126 @@ app.post('/webhook-ata', async (req, res) => {
 });
 
 // ============================================================================
+// 🆕 NOVO - ROTA DE NOTIFICAÇÃO DO FLUXO UNIMED (E-MAIL COM PRINT)
+// ============================================================================
+// Disparada pelo HTML ao clicar "Verificado (Autorizar)" ou "Enviar Nicolas"
+// ============================================================================
+app.post('/fluxo-unimed/notificar', async (req, res) => {
+    try {
+        const { pacienteNome, acao, pacienteDados } = req.body;
+
+        if (!pacienteNome || !acao) {
+            return res.status(400).json({ erro: 'Campos pacienteNome e acao são obrigatórios.' });
+        }
+
+        // =============================================
+        // AÇÃO: NICOLAS (Enviar para Nicolas verificar)
+        // =============================================
+        if (acao === 'nicolas') {
+            let dataFormatadaBR = pacienteDados.data_solicitacao || '-';
+            if (dataFormatadaBR.includes('-')) {
+                dataFormatadaBR = dataFormatadaBR.split('-').reverse().join('/');
+            }
+
+            const mailNicolas = {
+                from: `"Sistema ONCO SMART" <${process.env.EMAIL_USER}>`,
+                to: 'nicolas.araujo@ecooncologia.com.br',
+                subject: `🔔 Verificação Necessária: Paciente ${pacienteNome}`,
+                html: `
+                    <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+                        <h2 style="color: #f59e0b;">⚠️ Verificação de Dosagem Pendente</h2>
+                        <p>Olá Nicolas,</p>
+                        <p>O paciente <strong>${pacienteNome}</strong> precisa da sua verificação de dosagem.</p>
+                        <table style="border-collapse:collapse; margin:10px 0;">
+                            <tr><td style="padding:4px 10px; font-weight:bold; color:#6b7280;">Protocolo:</td><td style="padding:4px 10px;">${pacienteDados.protocolo || '-'}</td></tr>
+                            <tr><td style="padding:4px 10px; font-weight:bold; color:#6b7280;">Diagnóstico:</td><td style="padding:4px 10px;">${pacienteDados.diagnostico || '-'}</td></tr>
+                            <tr><td style="padding:4px 10px; font-weight:bold; color:#6b7280;">Data Solicitação:</td><td style="padding:4px 10px;">${dataFormatadaBR}</td></tr>
+                        </table>
+                        <p>Acesse o sistema ONCO SMART para aprovar ou negar.</p>
+                        <hr style="border: 0; border-top: 1px solid #eee;">
+                        <p style="font-size: 12px; color: #777;"><em>Robô de Varredura - Onco Smart</em></p>
+                    </div>
+                `
+            };
+
+            // Anexa print se existir (quando o robô já encontrou a guia)
+            if (pacienteDados.print_url) {
+                const printPath = path.join('/opt/robo-unimed/public', pacienteDados.print_url);
+                if (fs.existsSync(printPath)) {
+                    mailNicolas.attachments = [{
+                        filename: `Guia_${pacienteNome.replace(/\s+/g, '_')}.png`,
+                        path: printPath
+                    }];
+                }
+            }
+
+            await transporter.sendMail(mailNicolas);
+            console.log(`📧 [FLUXO UNIMED] E-mail enviado para Nicolas - Paciente: ${pacienteNome}`);
+            return res.json({ sucesso: true, mensagem: 'E-mail enviado para Nicolas.' });
+        }
+
+        // =============================================
+        // AÇÃO: FARMACIA/ENFERMAGEM (Verificado → Autorizado)
+        // Dispara e-mail com PRINT para autorizacoes@ecooncologia.com.br
+        // =============================================
+        if (acao === 'farmacia_enfermagem') {
+            let dataFormatadaBR = pacienteDados.data_solicitacao || '-';
+            if (dataFormatadaBR.includes('-')) {
+                dataFormatadaBR = dataFormatadaBR.split('-').reverse().join('/');
+            }
+
+            const mailAutorizacao = {
+                from: `"Sistema ONCO SMART" <${process.env.EMAIL_USER}>`,
+                to: 'autorizacoes@ecooncologia.com.br',
+                subject: `✅ Guia Autorizada: Paciente ${pacienteNome}`,
+                html: `
+                    <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+                        <h2 style="color: #059669;">✅ Autorização Unimed Confirmada</h2>
+                        <p>A guia do paciente abaixo foi <strong>verificada e autorizada</strong> pelo Nicolas:</p>
+                        <table style="border-collapse:collapse; margin:10px 0; width:100%; max-width:500px;">
+                            <tr style="background:#f9fafb;"><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Paciente</td><td style="padding:8px 12px; border:1px solid #eee; font-weight:bold; color:#0284c7;">${pacienteNome}</td></tr>
+                            <tr><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Carteirinha</td><td style="padding:8px 12px; border:1px solid #eee; font-family:monospace;">${pacienteDados.carteirinha || '-'}</td></tr>
+                            <tr style="background:#f9fafb;"><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Protocolo</td><td style="padding:8px 12px; border:1px solid #eee;">${pacienteDados.protocolo || '-'}</td></tr>
+                            <tr><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Diagnóstico</td><td style="padding:8px 12px; border:1px solid #eee;">${pacienteDados.diagnostico || '-'}</td></tr>
+                            <tr style="background:#f9fafb;"><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Data Solicitação</td><td style="padding:8px 12px; border:1px solid #eee;">${dataFormatadaBR}</td></tr>
+                            <tr><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Intervalo Ciclos</td><td style="padding:8px 12px; border:1px solid #eee;">${pacienteDados.intervalo ? pacienteDados.intervalo + ' dias' : '-'}</td></tr>
+                        </table>
+                        <p>O print da guia autorizada segue em <strong>anexo</strong>.</p>
+                        <br>
+                        <hr style="border: 0; border-top: 1px solid #eee;">
+                        <p style="font-size: 12px; color: #777;"><em>Robô de Varredura - Onco Smart</em></p>
+                    </div>
+                `
+            };
+
+            // ✅ ANEXA O PRINT DA GUIA SE EXISTIR
+            if (pacienteDados.print_url) {
+                const printPath = path.join('/opt/robo-unimed/public', pacienteDados.print_url);
+                if (fs.existsSync(printPath)) {
+                    mailAutorizacao.attachments = [{
+                        filename: `Guia_Autorizada_${pacienteNome.replace(/\s+/g, '_')}.png`,
+                        path: printPath
+                    }];
+                    console.log(`📎 [FLUXO UNIMED] Print anexado ao e-mail: ${printPath}`);
+                } else {
+                    console.log(`⚠️ [FLUXO UNIMED] Print não encontrado em: ${printPath}`);
+                }
+            }
+
+            await transporter.sendMail(mailAutorizacao);
+            console.log(`📧 [FLUXO UNIMED] E-mail com print enviado para autorizacoes@ecooncologia.com.br - Paciente: ${pacienteNome}`);
+            return res.json({ sucesso: true, mensagem: 'E-mail com print enviado para autorizacoes@ecooncologia.com.br' });
+        }
+
+        return res.status(400).json({ erro: `Ação "${acao}" não reconhecida.` });
+
+    } catch (error) {
+        console.error('❌ [FLUXO UNIMED] Erro na rota /fluxo-unimed/notificar:', error.message);
+        return res.status(500).json({ erro: 'Erro interno ao processar notificação.' });
+    }
+});
+
+// ============================================================================
 // --- ROTA DE LEITURA (GET) ---
 // ============================================================================
 app.get('/:tabela', async (req, res, next) => {
@@ -601,7 +736,6 @@ app.get('/:tabela', async (req, res, next) => {
             let dados = {};
             try { dados = JSON.parse(linha.dados_extras || '{}'); } catch(e) {}
             
-            // 💡 MESCLAGEM P/ EVITAR DESVÍNCULO: Mantém dados nativos
             dados = { ...linha, ...dados };
             dados.id_firebase = linha.id_firebase;
 
@@ -731,7 +865,7 @@ async function handleSave(req, res, next) {
         else if (tabela === 'patientCalls') {
             await pool.query(`INSERT INTO patientCalls (id_firebase, patientId, patientName, origin, status, timestamp, transportStartTime, transportEndTime, dados_extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), transportStartTime=VALUES(transportStartTime), transportEndTime=VALUES(transportEndTime), dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`,
             [finalId, dados.patientId || null, dados.patientName || dados.name, dados.origin || null,
-            dados.status || 'waiting',   // ← CORRIGIDO
+            dados.status || 'waiting',
             limparData(dados.timestamp), limparData(dados.transportStartTime), limparData(dados.transportEndTime), JSON.stringify(dados), JSON.stringify(dados)]);
         }
         else if (tabela === 'painAssessments') {
