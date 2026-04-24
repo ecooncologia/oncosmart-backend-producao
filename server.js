@@ -572,6 +572,9 @@ app.post('/webhook-ata', async (req, res) => {
 // ============================================================================
 // Disparada pelo HTML ao clicar "Verificado (Autorizar)" ou "Enviar Nicolas"
 // ============================================================================
+// ============================================================================
+// 🆕 NOVO - ROTA DE NOTIFICAÇÃO DO FLUXO UNIMED (E-MAIL COM PRINT)
+// ============================================================================
 app.post('/fluxo-unimed/notificar', async (req, res) => {
     try {
         const { pacienteNome, acao, pacienteDados } = req.body;
@@ -610,14 +613,17 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
                 `
             };
 
-            // Anexa print se existir (quando o robô já encontrou a guia)
+            // ✅ CORRIGIDO: Usa __dirname para achar a pasta public automaticamente
             if (pacienteDados.print_url) {
-                const printPath = path.join('/opt/robo-unimed/public', pacienteDados.print_url);
+                const printPath = path.join(__dirname, 'public', pacienteDados.print_url);
                 if (fs.existsSync(printPath)) {
                     mailNicolas.attachments = [{
                         filename: `Guia_${pacienteNome.replace(/\s+/g, '_')}.png`,
                         path: printPath
                     }];
+                    console.log(`📎 [FLUXO UNIMED] Print anexado ao e-mail: ${printPath}`);
+                } else {
+                    console.log(`⚠️ [FLUXO UNIMED] Print não encontrado em: ${printPath}`);
                 }
             }
 
@@ -628,7 +634,6 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
 
         // =============================================
         // AÇÃO: FARMACIA/ENFERMAGEM (Verificado → Autorizado)
-        // Dispara e-mail com PRINT para autorizacoes@ecooncologia.com.br
         // =============================================
         if (acao === 'farmacia_enfermagem') {
             let dataFormatadaBR = pacienteDados.data_solicitacao || '-';
@@ -638,7 +643,7 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
 
             const mailAutorizacao = {
                 from: `"Sistema ONCO SMART" <${process.env.EMAIL_USER}>`,
-                to: ['autorizacoes@ecooncologia.com.br'],
+                to: 'autorizacoes@ecooncologia.com.br',
                 subject: `✅ Guia Autorizada: Paciente ${pacienteNome}`,
                 html: `
                     <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
@@ -660,9 +665,9 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
                 `
             };
 
-            // ✅ ANEXA O PRINT DA GUIA SE EXISTIR
+            // ✅ CORRIGIDO: Usa __dirname para achar a pasta public automaticamente
             if (pacienteDados.print_url) {
-                const printPath = path.join('/opt/robo-unimed/public', pacienteDados.print_url);
+                const printPath = path.join(__dirname, 'public', pacienteDados.print_url);
                 if (fs.existsSync(printPath)) {
                     mailAutorizacao.attachments = [{
                         filename: `Guia_Autorizada_${pacienteNome.replace(/\s+/g, '_')}.png`,
