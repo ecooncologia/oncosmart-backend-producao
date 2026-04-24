@@ -648,7 +648,7 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
                 html: `
                     <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
                         <h2 style="color: #059669;">✅ Autorização Unimed Confirmada</h2>
-                        <p>A guia do paciente abaixo foi <strong>verificada e autorizada</strong> pelo Nicolas:</p>
+                        <p>A guia do paciente abaixo foi <strong>verificada e autorizada</strong>, seguir o para <strong>agendamento:</strong></p>
                         <table style="border-collapse:collapse; margin:10px 0; width:100%; max-width:500px;">
                             <tr style="background:#f9fafb;"><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Paciente</td><td style="padding:8px 12px; border:1px solid #eee; font-weight:bold; color:#0284c7;">${pacienteNome}</td></tr>
                             <tr><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Carteirinha</td><td style="padding:8px 12px; border:1px solid #eee; font-family:monospace;">${pacienteDados.carteirinha || '-'}</td></tr>
