@@ -882,9 +882,40 @@ async function handleSave(req, res, next) {
             if (id) {
                 const [currentRows] = await pool.query('SELECT status FROM helpdesk_tickets WHERE id_firebase = ?', [id]);
                 const statusAntigo = currentRows.length > 0 ? currentRows[0].status : null;
-                if (dados.status === 'finalizado' && statusAntigo !== 'finalizado') {
-                    try { await transporter.sendMail({ from: '"Suporte TI - ONCO SMART" <aecooncologia@gmail.com>', to: dados.uid, subject: `✅ Chamado Encerrado: #${dados.ticket_id || '0000'} - ${dados.assunto}`, html: `<p>Resolvido.</p>` }); } catch(emailErr) {}
+            if (dados.status === 'finalizado' && statusAntigo !== 'finalizado') {
+                try { 
+                    // O e-mail do solicitante está salvo no uid
+                    const destinatario = dados.uid;
+                    
+                    if (!destinatario || !destinatario.includes('@')) {
+                        throw new Error(`Endereço de e-mail inválido ou ausente: ${destinatario}`);
+                    }
+
+                    await transporter.sendMail({ 
+                        from: `"Suporte TI - ONCO SMART" <${process.env.EMAIL_USER}>`, 
+                        to: destinatario, 
+                        subject: `✅ Chamado Encerrado: #${dados.ticket_id || '0000'} - ${dados.assunto}`, 
+                        html: `
+                            <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+                                <h2 style="color: #00855B;">Chamado Finalizado</h2>
+                                <p>Olá,</p>
+                                <p>O seu chamado técnico foi marcado como concluído pelo suporte.</p>
+                                <div style="background-color: #f8fafc; border-left: 4px solid #00855B; padding: 15px; margin: 20px 0;">
+                                    <p style="margin: 0;"><strong>Solução Apresentada:</strong></p>
+                                    <p style="margin: 10px 0 0 0; white-space: pre-wrap;">${dados.solution || 'Resolvido pelo suporte.'}</p>
+                                </div>
+                                <p>Se precisar de mais alguma coisa, basta abrir um novo chamado na Intranet.</p>
+                                <hr style="border: 0; border-top: 1px solid #eee; margin-top: 30px;">
+                                <p style="font-size: 12px; color: #777;"><em>Equipe de TI - Eco Oncologia</em></p>
+                            </div>
+                        ` 
+                    }); 
+                    console.log(`📧 [HELPDESK] E-mail de conclusão enviado com sucesso para: ${destinatario}`);
+                } catch(emailErr) {
+                    // Agora, se o Google bloquear o envio, o erro vai gritar no console da VM!
+                    console.error('❌ [HELPDESK] Falha ao enviar e-mail de conclusão:', emailErr.message);
                 }
+            }
                 if (statusAntigo === 'finalizado' && dados.status === 'pendente') avisarTeams(dados, true); 
             }
             await pool.query(`INSERT INTO helpdesk_tickets (id_firebase, uid, user, setor, categoria, assunto, desc_texto, status, sla, data_abertura, rate, solution, elapsedTime, lastResumeTime, closedAt, dados_extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE uid=VALUES(uid), user=VALUES(user), setor=VALUES(setor), categoria=VALUES(categoria), assunto=VALUES(assunto), desc_texto=VALUES(desc_texto), status=VALUES(status), sla=VALUES(sla), data_abertura=VALUES(data_abertura), rate=VALUES(rate), solution=VALUES(solution), elapsedTime=VALUES(elapsedTime), lastResumeTime=VALUES(lastResumeTime), closedAt=VALUES(closedAt), dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [finalId, dados.uid || null, dados.user || null, dados.setor || null, dados.categoria || null, dados.assunto || null, dados.desc || null, dados.status || 'pendente', dados.sla || null, limparData(dados.date), dados.rate || null, dados.solution || null, dados.elapsedTime || 0, dados.lastResumeTime || null, dados.closedAt || null, JSON.stringify(dados), JSON.stringify(dados)]);
