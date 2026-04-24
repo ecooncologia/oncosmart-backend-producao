@@ -883,7 +883,7 @@ async function handleSave(req, res, next) {
                 const [currentRows] = await pool.query('SELECT status FROM helpdesk_tickets WHERE id_firebase = ?', [id]);
                 const statusAntigo = currentRows.length > 0 ? currentRows[0].status : null;
                 if (dados.status === 'finalizado' && statusAntigo !== 'finalizado') {
-                    try { await transporter.sendMail({ from: '"Suporte TI - ONCO SMART" <suporte.ecooncologia@gmail.com>', to: dados.uid, subject: `✅ Chamado Encerrado: #${dados.ticket_id || '0000'} - ${dados.assunto}`, html: `<p>Resolvido.</p>` }); } catch(emailErr) {}
+                    try { await transporter.sendMail({ from: '"Suporte TI - ONCO SMART" <aecooncologia@gmail.com>', to: dados.uid, subject: `✅ Chamado Encerrado: #${dados.ticket_id || '0000'} - ${dados.assunto}`, html: `<p>Resolvido.</p>` }); } catch(emailErr) {}
                 }
                 if (statusAntigo === 'finalizado' && dados.status === 'pendente') avisarTeams(dados, true); 
             }
