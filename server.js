@@ -174,6 +174,52 @@ app.get('/custos_oracle', async (req, res) => {
 });
 
 // ============================================================================
+// 🚀 NOVA ROTA: CUSTO OPERAÇÃO VITA (ORACLE TASY)
+// ============================================================================
+app.get('/view_vita', async (req, res) => {
+    let connection;
+    try {
+        const mesFiltro = req.query.mes; // Formato esperado: '2026-04'
+
+        if (!mesFiltro) {
+            console.log("🛑 [Oracle] BLOQUEADO: Tentativa de buscar view_vita sem informar o mês.");
+            return res.status(400).json({ error: "Mês não informado (esperado: AAAA-MM)." });
+        }
+
+        connection = await oracledb.getConnection(dbConfigOracle);
+        
+        // CORREÇÃO: Adicionado o prefixo TASY. antes do nome da view
+        const querySql = `
+            SELECT 
+                nm_pessoa_fisica, 
+                nr_prescricao, 
+                dt_atendimento, 
+                ds_material_conta, 
+                ds_material, 
+                dose_real_custo, 
+                custo_antigo, 
+                vl_custo_unitario_manip, 
+                custo_total_antigo 
+            FROM TASY.view_vita
+        `;
+        
+        const result = await connection.execute(querySql);
+        
+        console.log(`✅ [Oracle] view_vita consultada com sucesso. ${result.rows.length} registros (Mês: ${mesFiltro}).`);
+        res.json(result.rows);
+        console.log()
+        
+    } catch (err) {
+        console.error("❌ [Oracle] Erro fatal na rota /view_vita:", err.message);
+        res.status(500).json({ error: "Erro ao buscar dados da view_vita: " + err.message });
+    } finally {
+        if (connection) {
+            try { await connection.close(); } catch (e) { console.error(e); }
+        }
+    }
+});
+
+// ============================================================================
 // 🧬 MÓDULO DE PROTOCOLOS E TAGS (COM LOGS DETALHADOS PARA DEBUG)
 // ============================================================================
 
@@ -572,9 +618,6 @@ app.post('/webhook-ata', async (req, res) => {
 // ============================================================================
 // Disparada pelo HTML ao clicar "Verificado (Autorizar)" ou "Enviar Nicolas"
 // ============================================================================
-// ============================================================================
-// 🆕 NOVO - ROTA DE NOTIFICAÇÃO DO FLUXO UNIMED (E-MAIL COM PRINT)
-// ============================================================================
 app.post('/fluxo-unimed/notificar', async (req, res) => {
     try {
         const { pacienteNome, acao, pacienteDados } = req.body;
@@ -613,17 +656,14 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
                 `
             };
 
-            // ✅ CORRIGIDO: Usa __dirname para achar a pasta public automaticamente
+            // Anexa print se existir (quando o robô já encontrou a guia)
             if (pacienteDados.print_url) {
-                const printPath = path.join(__dirname, 'public', pacienteDados.print_url);
+                const printPath = path.join('/opt/robo-unimed/public', pacienteDados.print_url);
                 if (fs.existsSync(printPath)) {
                     mailNicolas.attachments = [{
                         filename: `Guia_${pacienteNome.replace(/\s+/g, '_')}.png`,
                         path: printPath
                     }];
-                    console.log(`📎 [FLUXO UNIMED] Print anexado ao e-mail: ${printPath}`);
-                } else {
-                    console.log(`⚠️ [FLUXO UNIMED] Print não encontrado em: ${printPath}`);
                 }
             }
 
@@ -634,6 +674,7 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
 
         // =============================================
         // AÇÃO: FARMACIA/ENFERMAGEM (Verificado → Autorizado)
+        // Dispara e-mail com PRINT para autorizacoes@ecooncologia.com.br
         // =============================================
         if (acao === 'farmacia_enfermagem') {
             let dataFormatadaBR = pacienteDados.data_solicitacao || '-';
@@ -648,7 +689,7 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
                 html: `
                     <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
                         <h2 style="color: #059669;">✅ Autorização Unimed Confirmada</h2>
-                        <p>A guia do paciente abaixo foi <strong>verificada e autorizada</strong>, seguir o para <strong>agendamento:</strong></p>
+                        <p>A guia do paciente abaixo foi <strong>verificada e autorizada</strong> pelo Nicolas:</p>
                         <table style="border-collapse:collapse; margin:10px 0; width:100%; max-width:500px;">
                             <tr style="background:#f9fafb;"><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Paciente</td><td style="padding:8px 12px; border:1px solid #eee; font-weight:bold; color:#0284c7;">${pacienteNome}</td></tr>
                             <tr><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Carteirinha</td><td style="padding:8px 12px; border:1px solid #eee; font-family:monospace;">${pacienteDados.carteirinha || '-'}</td></tr>
@@ -665,9 +706,9 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
                 `
             };
 
-            // ✅ CORRIGIDO: Usa __dirname para achar a pasta public automaticamente
+            // ✅ ANEXA O PRINT DA GUIA SE EXISTIR
             if (pacienteDados.print_url) {
-                const printPath = path.join(__dirname, 'public', pacienteDados.print_url);
+                const printPath = path.join('/opt/robo-unimed/public', pacienteDados.print_url);
                 if (fs.existsSync(printPath)) {
                     mailAutorizacao.attachments = [{
                         filename: `Guia_Autorizada_${pacienteNome.replace(/\s+/g, '_')}.png`,
@@ -887,40 +928,9 @@ async function handleSave(req, res, next) {
             if (id) {
                 const [currentRows] = await pool.query('SELECT status FROM helpdesk_tickets WHERE id_firebase = ?', [id]);
                 const statusAntigo = currentRows.length > 0 ? currentRows[0].status : null;
-            if (dados.status === 'finalizado' && statusAntigo !== 'finalizado') {
-                try { 
-                    // O e-mail do solicitante está salvo no uid
-                    const destinatario = dados.uid;
-                    
-                    if (!destinatario || !destinatario.includes('@')) {
-                        throw new Error(`Endereço de e-mail inválido ou ausente: ${destinatario}`);
-                    }
-
-                    await transporter.sendMail({ 
-                        from: `"Suporte TI - ONCO SMART" <${process.env.EMAIL_USER}>`, 
-                        to: destinatario, 
-                        subject: `✅ Chamado Encerrado: #${dados.ticket_id || '0000'} - ${dados.assunto}`, 
-                        html: `
-                            <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
-                                <h2 style="color: #00855B;">Chamado Finalizado</h2>
-                                <p>Olá,</p>
-                                <p>O seu chamado técnico foi marcado como concluído pelo suporte.</p>
-                                <div style="background-color: #f8fafc; border-left: 4px solid #00855B; padding: 15px; margin: 20px 0;">
-                                    <p style="margin: 0;"><strong>Solução Apresentada:</strong></p>
-                                    <p style="margin: 10px 0 0 0; white-space: pre-wrap;">${dados.solution || 'Resolvido pelo suporte.'}</p>
-                                </div>
-                                <p>Se precisar de mais alguma coisa, basta abrir um novo chamado na Intranet.</p>
-                                <hr style="border: 0; border-top: 1px solid #eee; margin-top: 30px;">
-                                <p style="font-size: 12px; color: #777;"><em>Equipe de TI - Eco Oncologia</em></p>
-                            </div>
-                        ` 
-                    }); 
-                    console.log(`📧 [HELPDESK] E-mail de conclusão enviado com sucesso para: ${destinatario}`);
-                } catch(emailErr) {
-                    // Agora, se o Google bloquear o envio, o erro vai gritar no console da VM!
-                    console.error('❌ [HELPDESK] Falha ao enviar e-mail de conclusão:', emailErr.message);
+                if (dados.status === 'finalizado' && statusAntigo !== 'finalizado') {
+                    try { await transporter.sendMail({ from: '"Suporte TI - ONCO SMART" <suporte.ecooncologia@gmail.com>', to: dados.uid, subject: `✅ Chamado Encerrado: #${dados.ticket_id || '0000'} - ${dados.assunto}`, html: `<p>Resolvido.</p>` }); } catch(emailErr) {}
                 }
-            }
                 if (statusAntigo === 'finalizado' && dados.status === 'pendente') avisarTeams(dados, true); 
             }
             await pool.query(`INSERT INTO helpdesk_tickets (id_firebase, uid, user, setor, categoria, assunto, desc_texto, status, sla, data_abertura, rate, solution, elapsedTime, lastResumeTime, closedAt, dados_extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE uid=VALUES(uid), user=VALUES(user), setor=VALUES(setor), categoria=VALUES(categoria), assunto=VALUES(assunto), desc_texto=VALUES(desc_texto), status=VALUES(status), sla=VALUES(sla), data_abertura=VALUES(data_abertura), rate=VALUES(rate), solution=VALUES(solution), elapsedTime=VALUES(elapsedTime), lastResumeTime=VALUES(lastResumeTime), closedAt=VALUES(closedAt), dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [finalId, dados.uid || null, dados.user || null, dados.setor || null, dados.categoria || null, dados.assunto || null, dados.desc || null, dados.status || 'pendente', dados.sla || null, limparData(dados.date), dados.rate || null, dados.solution || null, dados.elapsedTime || 0, dados.lastResumeTime || null, dados.closedAt || null, JSON.stringify(dados), JSON.stringify(dados)]);
