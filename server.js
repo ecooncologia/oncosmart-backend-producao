@@ -813,6 +813,7 @@ app.post('/caixinha/cobrar', async (req, res) => {
                     <p>Olá <strong>${colaboradorNome}</strong>,</p>
                     <p>Notamos que o pagamento da Caixinha ECO referente ao mês de <strong>${mesReferencia}</strong> ainda consta como pendente em nosso sistema.</p>
                     <p><strong>Valor:</strong> ${valor || 'R$ 10,00'}</p>
+                    <p><strong>PIX:</strong> 41 98457-0126</p>
                     <p>Por favor, regularize o valor com a responsável pela caixinha assim que possível para continuarmos celebrando os aniversários da equipe!</p>
                     <hr style="border: 0; border-top: 1px solid #eee; margin-top: 20px;">
                     <p style="font-size: 12px; color: #777;"><em>Mensagem automática do sistema ONCO SMART</em></p>
