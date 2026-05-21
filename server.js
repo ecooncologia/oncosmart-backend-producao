@@ -5,7 +5,7 @@ const mysql = require('mysql2/promise');
 const cors = require('cors');
 const https = require('https');
 const fs = require('fs');
-const path = require('path'); // 🆕 NOVO - Necessário para montar caminho dos prints
+const path = require('path'); // Necessário para montar caminho dos prints
 const nodemailer = require('nodemailer');
 
 // 1. IMPORTANDO O MOTOR DO ORACLE
@@ -26,9 +26,9 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// 🆕 NOVO - Servir prints do robô Unimed como arquivos estáticos
+// ✅ CORREÇÃO: Usando path.join e __dirname para resolver o caminho absoluto independente de onde o PM2 inicie o app
 // Faz o link "Ver Print da Guia" no HTML funcionar (Ex: /prints/print_unimed_123456.png)
-app.use('/prints', express.static('~/api-eco-teste/public/prints'));
+app.use('/prints', express.static(path.join(__dirname, 'public', 'prints')));
 
 const CHAVE_MESTRA = process.env.CHAVE_MESTRA; // 🔒 Puxando do .env
 const rotasAbertas = ['/avaliar', '/webhook-review', '/registrar_ponto', '/webhook-ata']; 
