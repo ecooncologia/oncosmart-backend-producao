@@ -1,4 +1,24 @@
 require('dotenv').config();
+
+// ============================================================================
+// 🕒 INTERCEPTADOR DE LOGS: CARIMBO GLOBAL DE DATA E HORA
+// ============================================================================
+const originalLog = console.log;
+const originalError = console.error;
+
+function getTimeBR() {
+    return new Date().toLocaleString("pt-BR", {timeZone: "America/Sao_Paulo"});
+}
+
+console.log = function(...args) {
+    originalLog(`[${getTimeBR()}]`, ...args);
+};
+
+console.error = function(...args) {
+    originalError(`[${getTimeBR()}] ❌ ERRO:`, ...args);
+};
+// ============================================================================
+
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
@@ -459,7 +479,7 @@ async function processarFilaCompleta(pacientesPendentes) {
 // ==========================================
 async function processarFilaPendentes() {
     console.log('==================================================');
-    console.log('🕒 Iniciando verificação de fila (Banco VM - DEBIAN COM LOG) - ' + new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }));
+    console.log('🕒 Iniciando verificação de fila (Banco VM - DEBIAN COM LOG)');
 
     try {
         await pool.query(`
