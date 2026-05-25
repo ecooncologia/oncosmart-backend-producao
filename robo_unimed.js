@@ -1,3 +1,22 @@
+// ============================================================================
+// 🕒 INTERCEPTADOR DE LOGS: CARIMBO GLOBAL DE DATA E HORA
+// ============================================================================
+const originalLog = console.log;
+const originalError = console.error;
+
+function getTimeBR() {
+    return new Date().toLocaleString("pt-BR", {timeZone: "America/Sao_Paulo"});
+}
+
+console.log = function(...args) {
+    originalLog(`[${getTimeBR()}]`, ...args);
+};
+
+console.error = function(...args) {
+    originalError(`[${getTimeBR()}] ❌ ERRO:`, ...args);
+};
+// ============================================================================
+
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
@@ -116,7 +135,7 @@ async function quebrarCaptcha(url, siteKey) {
 // ==========================================
 async function executarRoboUnimed() {
     console.log('==================================================');
-    console.log('🚀 INICIANDO ROBÔ UNIMED (INTELIGÊNCIA TUSS E ANTI-DUPLICAÇÃO) - ' + new Date().toLocaleString());
+    console.log('🚀 INICIANDO ROBÔ UNIMED (INTELIGÊNCIA TUSS E ANTI-DUPLICAÇÃO)');
 
     // 🕒 REGRA DE TEMPO: Exatos 2 meses atrás
     const hoje = new Date();
