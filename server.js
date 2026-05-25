@@ -46,15 +46,13 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // 🆕 NOVO - Servir prints do robô Unimed como arquivos estáticos
-// Faz o link "Ver Print da Guia" no HTML funcionar (Ex: /prints/print_unimed_123456.png)
 app.use('/prints', express.static('~/api-eco-teste/public/prints'));
 
-const CHAVE_MESTRA = process.env.CHAVE_MESTRA; // 🔒 Puxando do .env
+const CHAVE_MESTRA = process.env.CHAVE_MESTRA; 
 const rotasAbertas = ['/avaliar', '/webhook-review', '/registrar_ponto', '/webhook-ata']; 
 
 app.use((req, res, next) => {
     const portaAcessada = req.socket.localPort;
-    // 🔒 Puxando portas externas do .env
     const portasExternas = [parseInt(process.env.PORT_EXTERNA_QR), parseInt(process.env.PORT_EXTERNA_MAKE)]; 
 
     if (portasExternas.includes(portaAcessada) && !rotasAbertas.includes(req.path)) {
@@ -75,7 +73,6 @@ app.use((req, res, next) => {
 // --- CREDENCIAIS DOS BANCOS DE DADOS ---
 // ============================================================================
 
-// 🛢️ BANCO MYSQL (Blindado com .env)
 const pool = mysql.createPool({
     host: '127.0.0.1',
     user: process.env.DB_USER,
@@ -87,7 +84,6 @@ const pool = mysql.createPool({
     timezone: '-03:00' 
 });
 
-// 🛢️ BANCO ORACLE 19c (Blindado com .env)
 const dbConfigOracle = {
     user: process.env.ORACLE_USER,
     password: process.env.ORACLE_PASS,
@@ -112,7 +108,7 @@ const FIREBASE_DB_URL = "https://gerar-orcamento-bd4d1-default-rtdb.firebaseio.c
 // --- E-MAIL E FUNÇÕES ---
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com', port: 587, secure: false,
-    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS } // 🔒 Puxando do .env
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS } 
 });
 
 async function avisarTeams(ticket, isReabertura = false) {
@@ -192,13 +188,10 @@ app.get('/custos_oracle', async (req, res) => {
     }
 });
 
-// ============================================================================
-// 🚀 NOVA ROTA: CUSTO OPERAÇÃO VITA (ORACLE TASY)
-// ============================================================================
 app.get('/view_vita', async (req, res) => {
     let connection;
     try {
-        const mesFiltro = req.query.mes; // Formato esperado: '2026-04'
+        const mesFiltro = req.query.mes; 
 
         if (!mesFiltro) {
             console.log("🛑 [Oracle] BLOQUEADO: Tentativa de buscar view_vita sem informar o mês.");
@@ -237,7 +230,7 @@ app.get('/view_vita', async (req, res) => {
 });
 
 // ============================================================================
-// 🧬 MÓDULO DE PROTOCOLOS E TAGS (COM LOGS DETALHADOS PARA DEBUG)
+// 🧬 MÓDULO DE PROTOCOLOS E TAGS
 // ============================================================================
 
 app.post('/protocolos/init-tables', async (req, res) => {
@@ -303,9 +296,7 @@ app.get('/protocolos/sync-tasy', async (req, res) => {
         
         console.log("[2/4] Executando Query na View TASY.PROTOCOLOS_ECO...");
         
-        const resultOracle = await connection.execute(oracleSql, [], {
-            maxRows: 10000 
-        });
+        const resultOracle = await connection.execute(oracleSql, [], { maxRows: 10000 });
         
         console.log(`[2/4] Query finalizada. Retornou ${resultOracle?.rows?.length || 0} linhas.`);
 
@@ -315,7 +306,6 @@ app.get('/protocolos/sync-tasy', async (req, res) => {
             console.log("[3/4] Inserindo dados no MySQL...");
             for (let i = 0; i < resultOracle.rows.length; i++) {
                 let row = resultOracle.rows[i];
-                
                 if (!row) continue;
                 
                 const cd_estabelecimento = row.CD_ESTABELECIMENTO ?? row[0] ?? null;
@@ -333,13 +323,9 @@ app.get('/protocolos/sync-tasy', async (req, res) => {
                         `INSERT INTO protocolos 
                         (cd_estabelecimento, seq_protocolo, cd_protocolo, nr_seq_subtipo, nm_protocolo, nm_subtipo, nr_ciclos, nr_dias_intervalo, nm_usuario) 
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                        [
-                            cd_estabelecimento, seq_protocolo, cd_protocolo, nr_seq_subtipo, 
-                            nm_protocolo, nm_subtipo, nr_ciclos, nr_dias_intervalo, nm_usuario
-                        ]
+                        [cd_estabelecimento, seq_protocolo, cd_protocolo, nr_seq_subtipo, nm_protocolo, nm_subtipo, nr_ciclos, nr_dias_intervalo, nm_usuario]
                     );
                     inserted++;
-
                 } catch(mysqlErr) {
                     console.error(`⚠️ [MySQL] Falha silenciosa ao inserir linha ${i}. Erro:`, mysqlErr.message);
                 }
@@ -522,7 +508,6 @@ const CARIMBO_GLOBAL = "eco_ja_avaliou_clinica";
 
 app.get('/avaliar', (req, res) => {
     const funcId = req.query.func_id;
-    const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
 
     if (!funcId) return res.redirect(GOOGLE_REVIEW_LINK);
 
@@ -628,7 +613,7 @@ app.post('/webhook-ata', async (req, res) => {
 });
 
 // ============================================================================
-// 🆕 NOVO - ROTA DE NOTIFICAÇÃO DO FLUXO UNIMED (E-MAIL COM PRINT)
+// 🆕 ROTA DE NOTIFICAÇÃO DO FLUXO UNIMED
 // ============================================================================
 app.post('/fluxo-unimed/notificar', async (req, res) => {
     try {
@@ -796,7 +781,7 @@ app.post('/fluxo-unimed/farmacia', async (req, res) => {
 });
 
 // ============================================================================
-// 💰 NOVA ROTA: DISPARO DE COBRANÇA DA CAIXINHA
+// 💰 ROTA: DISPARO DE COBRANÇA DA CAIXINHA
 // ============================================================================
 app.post('/caixinha/cobrar', async (req, res) => {
     try {
@@ -1011,19 +996,25 @@ async function handleSave(req, res, next) {
             await pool.query(`INSERT INTO usuarios (id_firebase, nome, email, foto, permissoes, last_login, dados_extras) VALUES (?, ?, ?, ?, ?, NOW(), ?) ON DUPLICATE KEY UPDATE permissoes = VALUES(permissoes), nome = VALUES(nome), dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [finalId, dados.nome, dados.email, dados.foto||'', JSON.stringify(permsObj), JSON.stringify(dados), JSON.stringify(dados)]);
         }
         else if (tabela === 'patientCalls') {
+            // 🛡️ BLINDAGEM CONTRA ReferenceError: status is not defined e null values
+            const safePatientId = dados.patientId || null;
+            const safePatientName = dados.patientName || dados.name || null;
+            const safeOrigin = dados.origin || null;
+            const safeStatus = dados.status || 'waiting';
+
             await pool.query(`INSERT INTO patientCalls (id_firebase, patientId, patientName, origin, status, timestamp, transportStartTime, transportEndTime, dados_extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), transportStartTime=VALUES(transportStartTime), transportEndTime=VALUES(transportEndTime), dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`,
-            [finalId, dados.patientId || null, dados.patientName || dados.name, dados.origin || null,
-            dados.status || 'waiting',
-            limparData(dados.timestamp), limparData(dados.transportStartTime), limparData(dados.transportEndTime), JSON.stringify(dados), JSON.stringify(dados)]);
+            [finalId, safePatientId, safePatientName, safeOrigin, safeStatus, limparData(dados.timestamp), limparData(dados.transportStartTime), limparData(dados.transportEndTime), JSON.stringify(dados), JSON.stringify(dados)]);
         }
         else if (tabela === 'painAssessments') {
+            // 🛡️ BLINDAGEM EXTRA PARA O PAIN ASSESSMENTS
             const valPain = dados.painLevel || dados.pain_level || dados.nivel_dor || null;
             const valEmoji = dados.painEmoji || dados.pain_emoji || null;
             const valEmotion = dados.emotion || dados.emocao || null;
             const valCare = dados.careNeed || dados.care_need || dados.necessidade || null;
             const valName = dados.name || dados.titulo_principal || 'Sem Nome';
+            const safeStatus = dados.status || null;
 
-            await pool.query(`INSERT INTO painAssessments (id_firebase, data_registro, titulo_principal, origin, status, atendido, pain_level, pain_emoji, emotion, care_need, dados_extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), atendido=VALUES(atendido), pain_level=VALUES(pain_level), pain_emoji=VALUES(pain_emoji), emotion=VALUES(emotion), care_need=VALUES(care_need), dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [finalId, limparData(dados.timestamp), valName, dados.origin || null, dados.status, dados.atendido ? 1 : 0, valPain, valEmoji, valEmotion, valCare, JSON.stringify(dados), JSON.stringify(dados)]);
+            await pool.query(`INSERT INTO painAssessments (id_firebase, data_registro, titulo_principal, origin, status, atendido, pain_level, pain_emoji, emotion, care_need, dados_extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), atendido=VALUES(atendido), pain_level=VALUES(pain_level), pain_emoji=VALUES(pain_emoji), emotion=VALUES(emotion), care_need=VALUES(care_need), dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [finalId, limparData(dados.timestamp), valName, dados.origin || null, safeStatus, dados.atendido ? 1 : 0, valPain, valEmoji, valEmotion, valCare, JSON.stringify(dados), JSON.stringify(dados)]);
         }
         else if (tabelaSQL === 'helpdesk_tickets') {
             if (!id && req.method === 'POST') avisarTeams(dados); 
@@ -1032,7 +1023,6 @@ async function handleSave(req, res, next) {
                 const [currentRows] = await pool.query('SELECT status FROM helpdesk_tickets WHERE id_firebase = ?', [id]);
                 const statusAntigo = currentRows.length > 0 ? currentRows[0].status : null;
                 
-                // 1. E-MAIL QUANDO O CHAMADO É FINALIZADO (Agora com a solução)
                 if (dados.status === 'finalizado' && statusAntigo !== 'finalizado') {
                     try { 
                         await transporter.sendMail({ 
@@ -1053,10 +1043,8 @@ async function handleSave(req, res, next) {
                     } catch(emailErr) { console.error("Erro e-mail finalizado:", emailErr); }
                 }
 
-                // Verifica se o chamado foi reaberto
                 if (statusAntigo === 'finalizado' && dados.status === 'pendente') avisarTeams(dados, true); 
 
-                // 2. E-MAIL QUANDO UMA NOVA NOTA/RESPOSTA É ENVIADA
                 if (dados.nova_nota) {
                     try {
                         await transporter.sendMail({
@@ -1075,7 +1063,7 @@ async function handleSave(req, res, next) {
                         });
                     } catch(emailErr) { console.error("Erro e-mail nota:", emailErr); }
                     
-                    delete dados.nova_nota; // Remove essa propriedade para não salvá-la permanentemente no banco
+                    delete dados.nova_nota; 
                 }
             }
             
@@ -1325,7 +1313,6 @@ async function enviarResumoPrescricoes() {
     try {
         connection = await oracledb.getConnection(dbConfigOracle);
         
-        // Alterado para ONTEM (SYSDATE - 1) conforme solicitado
         const querySql = `
             SELECT 
                 nm_paciente, 
@@ -1411,24 +1398,21 @@ async function enviarResumoPrescricoes() {
     }
 }
 
-// ⏳ Teste Imediato (Roda 15s após ligar o servidor)
 setTimeout(() => {
     console.log("🚀 [Resumo Prescrições] Rodando disparo inicial...");
     enviarResumoPrescricoes();
 }, 15000);
 
-// ⏰ Relógio Oficial Mais Inteligente e Seguro
 let dataUltimoEnvioPrescricoes = null;
 setInterval(() => {
     const agora = new Date();
     const horaSP = new Date(agora.toLocaleString("en-US", {timeZone: "America/Sao_Paulo"}));
-    const dataAtualString = horaSP.toISOString().split('T')[0]; // Ex: "2026-05-25"
+    const dataAtualString = horaSP.toISOString().split('T')[0];
 
-    // Se for 6 horas da manhã E ainda não tiver enviado o e-mail na data de HOJE
     if (horaSP.getHours() === 6 && dataUltimoEnvioPrescricoes !== dataAtualString) {
         console.log("⏰ [Resumo Prescrições] Relógio marcou 06h! Iniciando extração do dia anterior...");
         enviarResumoPrescricoes();
-        dataUltimoEnvioPrescricoes = dataAtualString; // Marca que hoje já foi enviado
+        dataUltimoEnvioPrescricoes = dataAtualString; 
     }
 }, 60000); 
 
