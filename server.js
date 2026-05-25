@@ -1,11 +1,30 @@
 require('dotenv').config(); // 💡 Carrega as variáveis secretas do arquivo .env
 
+// ============================================================================
+// 🕒 INTERCEPTADOR DE LOGS: CARIMBO GLOBAL DE DATA E HORA
+// ============================================================================
+const originalLog = console.log;
+const originalError = console.error;
+
+function getTimeBR() {
+    return new Date().toLocaleString("pt-BR", {timeZone: "America/Sao_Paulo"});
+}
+
+console.log = function(...args) {
+    originalLog(`[${getTimeBR()}]`, ...args);
+};
+
+console.error = function(...args) {
+    originalError(`[${getTimeBR()}] ❌ ERRO:`, ...args);
+};
+// ============================================================================
+
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
 const https = require('https');
 const fs = require('fs');
-const path = require('path'); // Necessário para montar caminho dos prints
+const path = require('path'); 
 const nodemailer = require('nodemailer');
 
 // 1. IMPORTANDO O MOTOR DO ORACLE
@@ -26,9 +45,9 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// ✅ CORREÇÃO: Usando path.join e __dirname para resolver o caminho absoluto independente de onde o PM2 inicie o app
+// 🆕 NOVO - Servir prints do robô Unimed como arquivos estáticos
 // Faz o link "Ver Print da Guia" no HTML funcionar (Ex: /prints/print_unimed_123456.png)
-app.use('/prints', express.static(path.join(__dirname, 'public', 'prints')));
+app.use('/prints', express.static('~/api-eco-teste/public/prints'));
 
 const CHAVE_MESTRA = process.env.CHAVE_MESTRA; // 🔒 Puxando do .env
 const rotasAbertas = ['/avaliar', '/webhook-review', '/registrar_ponto', '/webhook-ata']; 
@@ -188,7 +207,6 @@ app.get('/view_vita', async (req, res) => {
 
         connection = await oracledb.getConnection(dbConfigOracle);
         
-        // CORREÇÃO: Adicionado o prefixo TASY. antes do nome da view
         const querySql = `
             SELECT 
                 nm_pessoa_fisica, 
@@ -207,7 +225,6 @@ app.get('/view_vita', async (req, res) => {
         
         console.log(`✅ [Oracle] view_vita consultada com sucesso. ${result.rows.length} registros (Mês: ${mesFiltro}).`);
         res.json(result.rows);
-        console.log()
         
     } catch (err) {
         console.error("❌ [Oracle] Erro fatal na rota /view_vita:", err.message);
@@ -299,7 +316,6 @@ app.get('/protocolos/sync-tasy', async (req, res) => {
             for (let i = 0; i < resultOracle.rows.length; i++) {
                 let row = resultOracle.rows[i];
                 
-                // 🛡️ BLINDAGEM MÁXIMA: Se a linha vier vazia do Oracle, pula para a próxima sem travar
                 if (!row) continue;
                 
                 const cd_estabelecimento = row.CD_ESTABELECIMENTO ?? row[0] ?? null;
@@ -313,7 +329,6 @@ app.get('/protocolos/sync-tasy', async (req, res) => {
                 const nm_usuario = row.NM_USUARIO ?? row[8] ?? null;
 
                 try {
-                    // INSERÇÃO BRUTA: Cada linha gera um ID novo no MySQL.
                     await pool.query(
                         `INSERT INTO protocolos 
                         (cd_estabelecimento, seq_protocolo, cd_protocolo, nr_seq_subtipo, nm_protocolo, nm_subtipo, nr_ciclos, nr_dias_intervalo, nm_usuario) 
@@ -327,7 +342,6 @@ app.get('/protocolos/sync-tasy', async (req, res) => {
 
                 } catch(mysqlErr) {
                     console.error(`⚠️ [MySQL] Falha silenciosa ao inserir linha ${i}. Erro:`, mysqlErr.message);
-                    // Erros individuais não travam mais a sincronização inteira
                 }
             }
             console.log(`[4/4] Inserção concluída! Total inserido: ${inserted}. Total lido: ${resultOracle.rows.length}`);
@@ -616,8 +630,6 @@ app.post('/webhook-ata', async (req, res) => {
 // ============================================================================
 // 🆕 NOVO - ROTA DE NOTIFICAÇÃO DO FLUXO UNIMED (E-MAIL COM PRINT)
 // ============================================================================
-// Disparada pelo HTML ao clicar "Verificado (Autorizar)" ou "Enviar Nicolas"
-// ============================================================================
 app.post('/fluxo-unimed/notificar', async (req, res) => {
     try {
         const { pacienteNome, acao, pacienteDados } = req.body;
@@ -626,9 +638,6 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
             return res.status(400).json({ erro: 'Campos pacienteNome e acao são obrigatórios.' });
         }
 
-        // =============================================
-        // AÇÃO: NICOLAS (Enviar para Nicolas verificar)
-        // =============================================
         if (acao === 'nicolas') {
             let dataFormatadaBR = pacienteDados.data_solicitacao || '-';
             if (dataFormatadaBR.includes('-')) {
@@ -656,7 +665,6 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
                 `
             };
 
-            // ✅ CORRIGIDO: Anexa print se existir usando __dirname
             if (pacienteDados.print_url) {
                 const printPath = path.join(__dirname, 'public', pacienteDados.print_url);
                 if (fs.existsSync(printPath)) {
@@ -675,10 +683,6 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
             return res.json({ sucesso: true, mensagem: 'E-mail enviado para Nicolas.' });
         }
 
-        // =============================================
-        // AÇÃO: FARMACIA/ENFERMAGEM (Verificado → Autorizado)
-        // Dispara e-mail com PRINT para autorizacoes@ecooncologia.com.br
-        // =============================================
         if (acao === 'farmacia_enfermagem') {
             let dataFormatadaBR = pacienteDados.data_solicitacao || '-';
             if (dataFormatadaBR.includes('-')) {
@@ -709,7 +713,6 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
                 `
             };
 
-            // ✅ CORRIGIDO: Anexa print se existir usando __dirname
             if (pacienteDados.print_url) {
                 const printPath = path.join(__dirname, 'public', pacienteDados.print_url);
                 if (fs.existsSync(printPath)) {
@@ -761,7 +764,7 @@ app.post('/fluxo-unimed/farmacia', async (req, res) => {
 
         const mailEnfermagem = {
             from: `"Farmácia ONCO SMART" <${process.env.EMAIL_USER}>`,
-            to: 'enfermagem@ecooncologia.com.br', // 💡 Altere para o e-mail real da enfermagem
+            to: 'enfermagem@ecooncologia.com.br', 
             subject: `${temEstoque ? '🟢 ESTOQUE OK' : '🔴 FALTA ESTOQUE'}: Paciente ${pacienteNome}`,
             html: `
                 <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; max-width: 600px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 25px; margin: 0 auto;">
@@ -1199,6 +1202,235 @@ app.delete('/:tabela/:id', async (req, res) => {
     } 
     catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ============================================================================
+// 🔄 ROTINA AUTOMÁTICA: MONITOR DE PROCEDIMENTOS AUTORIZADOS (TASY)
+// ============================================================================
+let lastProcedimentoSequencia = 0;
+
+async function monitorarNovosProcedimentos() {
+    let connection;
+    try {
+        if (lastProcedimentoSequencia === 0) {
+            try {
+                const [rowsConfig] = await pool.query("SELECT dados_extras FROM system_configs WHERE id_firebase = 'last_seq_procedimentos_eco'");
+                if (rowsConfig.length > 0) {
+                    const config = JSON.parse(rowsConfig[0].dados_extras);
+                    lastProcedimentoSequencia = config.lastSeq || 0;
+                    console.log(`[Monitor Procedimentos] Restabelecido do MySQL. Última sequência: ${lastProcedimentoSequencia}`);
+                }
+            } catch(e) { }
+        }
+
+        connection = await oracledb.getConnection(dbConfigOracle);
+
+        if (lastProcedimentoSequencia === 0) {
+            const resultMax = await connection.execute(`SELECT NVL(MAX(nr_sequencia), 0) AS MAX_SEQ FROM tasy.procedimentos_autorizados_eco`);
+            if (resultMax.rows && resultMax.rows.length > 0) {
+                lastProcedimentoSequencia = resultMax.rows[0].MAX_SEQ || resultMax.rows[0][0] || 0;
+                console.log(`[Monitor Procedimentos] Inicializado pelo Oracle. Última sequência: ${lastProcedimentoSequencia}`);
+                
+                try {
+                    await pool.query(`INSERT INTO system_configs (id_firebase, dados_extras) VALUES ('last_seq_procedimentos_eco', ?) ON DUPLICATE KEY UPDATE dados_extras=VALUES(dados_extras)`, [JSON.stringify({ lastSeq: lastProcedimentoSequencia })]);
+                } catch (err) {
+                    if (err.code === 'ER_NO_SUCH_TABLE') {
+                        await pool.query(`CREATE TABLE system_configs (id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(100) UNIQUE, dados_extras JSON)`);
+                        await pool.query(`INSERT INTO system_configs (id_firebase, dados_extras) VALUES ('last_seq_procedimentos_eco', ?)`, [JSON.stringify({ lastSeq: lastProcedimentoSequencia })]);
+                    }
+                }
+            }
+            return; 
+        }
+
+        const querySql = `
+            SELECT 
+                nr_sequencia, 
+                procedimento, 
+                pessoa, 
+                cd_procedimento, 
+                nr_atendimento, 
+                dt_atualizacao, 
+                medico 
+            FROM tasy.procedimentos_autorizados_eco
+            WHERE nr_sequencia > :lastSeq
+            ORDER BY nr_sequencia ASC
+        `;
+
+        const result = await connection.execute(querySql, { lastSeq: lastProcedimentoSequencia });
+
+        if (result.rows && result.rows.length > 0) {
+            for (let row of result.rows) {
+                const nr_sequencia = row.NR_SEQUENCIA ?? row.nr_sequencia;
+                const procedimento = row.PROCEDIMENTO ?? row.procedimento ?? '-';
+                const pessoa = row.PESSOA ?? row.pessoa ?? '-';
+                const cd_procedimento = row.CD_PROCEDIMENTO ?? row.cd_procedimento ?? '-';
+                const nr_atendimento = row.NR_ATENDIMENTO ?? row.nr_atendimento ?? '-';
+                let dt_atualizacao = row.DT_ATUALIZACAO ?? row.dt_atualizacao ?? '-';
+                const medico = row.MEDICO ?? row.medico ?? '-';
+
+                if (dt_atualizacao instanceof Date) {
+                    dt_atualizacao = dt_atualizacao.toLocaleString("pt-BR", {timeZone: "America/Sao_Paulo"});
+                }
+
+                const mailOptions = {
+                    from: '"ONCO SMART" <' + process.env.EMAIL_USER + '>',
+                    to: 'andreia.paula@ecooncologia.com.br',
+                    subject: `🔔 Novo Procedimento Autorizado: ${pessoa}`,
+                    html: `
+                        <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; max-width: 600px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 25px; margin: 0 auto;">
+                            <h2 style="color: #04A03D; margin-top: 0;">✅ Novo Procedimento Autorizado</h2>
+                            <p>Foi identificado um novo procedimento autorizado no sistema Tasy.</p>
+                            <table style="border-collapse:collapse; margin:20px 0; width:100%;">
+                                <tr style="background:#f9fafb;"><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Seq. Atualização</td><td style="padding:8px 12px; border:1px solid #eee;">${nr_sequencia}</td></tr>
+                                <tr><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Paciente</td><td style="padding:8px 12px; border:1px solid #eee; font-weight:bold; color:#0284c7;">${pessoa}</td></tr>
+                                <tr style="background:#f9fafb;"><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Procedimento</td><td style="padding:8px 12px; border:1px solid #eee;">${procedimento} (Cód: ${cd_procedimento})</td></tr>
+                                <tr><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Atendimento</td><td style="padding:8px 12px; border:1px solid #eee;">${nr_atendimento}</td></tr>
+                                <tr style="background:#f9fafb;"><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Médico</td><td style="padding:8px 12px; border:1px solid #eee;">${medico}</td></tr>
+                                <tr><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Data/Hora</td><td style="padding:8px 12px; border:1px solid #eee;">${dt_atualizacao}</td></tr>
+                            </table>
+                            <hr style="border: 0; border-top: 1px solid #eee; margin-top: 20px;">
+                            <p style="font-size: 12px; color: #777;"><em>Robô de Varredura - ONCO SMART</em></p>
+                        </div>
+                    `
+                };
+
+                await transporter.sendMail(mailOptions);
+                console.log(`📧 [Monitor Procedimentos] E-mail enviado p/ Andreia - ${pessoa} (Seq: ${nr_sequencia})`);
+
+                lastProcedimentoSequencia = nr_sequencia;
+                try {
+                    await pool.query("UPDATE system_configs SET dados_extras = ? WHERE id_firebase = 'last_seq_procedimentos_eco'", [JSON.stringify({ lastSeq: lastProcedimentoSequencia })]);
+                } catch(e) { console.error("Erro ao salvar checkpoint no MySQL:", e); }
+            }
+        }
+    } catch (err) {
+        console.error("❌ [Monitor Procedimentos] Erro ao buscar novos procedimentos:", err.message);
+    } finally {
+        if (connection) {
+            try { await connection.close(); } catch (e) { console.error(e); }
+        }
+    }
+}
+
+setTimeout(() => {
+    monitorarNovosProcedimentos();
+    setInterval(monitorarNovosProcedimentos, 3 * 60 * 1000);
+}, 10000);
+
+// ============================================================================
+// 🔄 ROTINA DIÁRIA: RESUMO DE PRESCRIÇÕES (TASY)
+// ============================================================================
+async function enviarResumoPrescricoes() {
+    let connection;
+    try {
+        connection = await oracledb.getConnection(dbConfigOracle);
+        
+        // Alterado para ONTEM (SYSDATE - 1) conforme solicitado
+        const querySql = `
+            SELECT 
+                nm_paciente, 
+                desc_prot, 
+                convenio, 
+                desc_medicacao, 
+                nome_medico, 
+                dt_protocolo
+            FROM tasy.prescricoesnovas
+            WHERE TRUNC(dt_protocolo) = TRUNC(SYSDATE - 1) 
+            ORDER BY dt_protocolo ASC
+        `;
+
+        const result = await connection.execute(querySql);
+
+        if (result.rows && result.rows.length > 0) {
+            let linhasTabela = '';
+            
+            for (let row of result.rows) {
+                const nm_paciente = row.NM_PACIENTE ?? row.nm_paciente ?? '-';
+                const desc_prot = row.DESC_PROT ?? row.desc_prot ?? '-';
+                const convenio = row.CONVENIO ?? row.convenio ?? '-';
+                const desc_medicacao = row.DESC_MEDICACAO ?? row.desc_medicacao ?? '-';
+                const nome_medico = row.NOME_MEDICO ?? row.nome_medico ?? '-';
+                let dt_protocolo = row.DT_PROTOCOLO ?? row.dt_protocolo ?? '-';
+
+                if (dt_protocolo instanceof Date) {
+                    dt_protocolo = dt_protocolo.toLocaleString("pt-BR", {timeZone: "America/Sao_Paulo"});
+                }
+
+                linhasTabela += `
+                    <tr>
+                        <td style="padding:8px; border:1px solid #eee; font-size:12px;">${nm_paciente}</td>
+                        <td style="padding:8px; border:1px solid #eee; font-size:12px;">${desc_prot}</td>
+                        <td style="padding:8px; border:1px solid #eee; font-size:12px;">${convenio}</td>
+                        <td style="padding:8px; border:1px solid #eee; font-size:12px;">${desc_medicacao}</td>
+                        <td style="padding:8px; border:1px solid #eee; font-size:12px;">${nome_medico}</td>
+                        <td style="padding:8px; border:1px solid #eee; font-size:12px;">${dt_protocolo}</td>
+                    </tr>
+                `;
+            }
+
+            const mailOptions = {
+                from: '"ONCO SMART" <' + process.env.EMAIL_USER + '>',
+                to: 'nicolas.araujo@ecooncologia.com.br',
+                subject: `📊 Resumo Diário de Prescrições (${result.rows.length} encontradas)`,
+                html: `
+                    <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; max-width: 800px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 25px; margin: 0 auto;">
+                        <h2 style="color: #04A03D; margin-top: 0;">📋 Relatório de Prescrições (Ontem)</h2>
+                        <p>Segue o resumo das novas prescrições registradas no sistema Tasy no dia anterior.</p>
+                        <table style="border-collapse:collapse; margin:20px 0; width:100%; text-align: left;">
+                            <thead>
+                                <tr style="background:#f9fafb; color:#6b7280;">
+                                    <th style="padding:8px; border:1px solid #eee; font-size:13px;">Paciente</th>
+                                    <th style="padding:8px; border:1px solid #eee; font-size:13px;">Protocolo</th>
+                                    <th style="padding:8px; border:1px solid #eee; font-size:13px;">Convênio</th>
+                                    <th style="padding:8px; border:1px solid #eee; font-size:13px;">Medicação</th>
+                                    <th style="padding:8px; border:1px solid #eee; font-size:13px;">Médico</th>
+                                    <th style="padding:8px; border:1px solid #eee; font-size:13px;">Data</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${linhasTabela}
+                            </tbody>
+                        </table>
+                        <hr style="border: 0; border-top: 1px solid #eee; margin-top: 20px;">
+                        <p style="font-size: 12px; color: #777;"><em>Gerado automaticamente pelo robô ONCO SMART</em></p>
+                    </div>
+                `
+            };
+
+            await transporter.sendMail(mailOptions);
+            console.log(`📧 [Resumo Prescrições] E-mail enviado p/ Nicolas com ${result.rows.length} registros de ontem.`);
+        } else {
+            console.log(`ℹ️ [Resumo Prescrições] Nenhuma prescrição encontrada para ontem.`);
+        }
+    } catch (err) {
+        console.error("❌ [Resumo Prescrições] Erro ao buscar prescrições:", err.message);
+    } finally {
+        if (connection) {
+            try { await connection.close(); } catch (e) { console.error(e); }
+        }
+    }
+}
+
+// ⏳ Teste Imediato (Roda 15s após ligar o servidor)
+setTimeout(() => {
+    console.log("🚀 [Resumo Prescrições] Rodando disparo inicial...");
+    enviarResumoPrescricoes();
+}, 15000);
+
+// ⏰ Relógio Oficial Mais Inteligente e Seguro
+let dataUltimoEnvioPrescricoes = null;
+setInterval(() => {
+    const agora = new Date();
+    const horaSP = new Date(agora.toLocaleString("en-US", {timeZone: "America/Sao_Paulo"}));
+    const dataAtualString = horaSP.toISOString().split('T')[0]; // Ex: "2026-05-25"
+
+    // Se for 6 horas da manhã E ainda não tiver enviado o e-mail na data de HOJE
+    if (horaSP.getHours() === 6 && dataUltimoEnvioPrescricoes !== dataAtualString) {
+        console.log("⏰ [Resumo Prescrições] Relógio marcou 06h! Iniciando extração do dia anterior...");
+        enviarResumoPrescricoes();
+        dataUltimoEnvioPrescricoes = dataAtualString; // Marca que hoje já foi enviado
+    }
+}, 60000); 
 
 // ============================================================================
 // 🔄 ROTINA AUTOMÁTICA DE VIRADA DE MÊS (RANKING)
