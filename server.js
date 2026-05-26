@@ -631,7 +631,7 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
 
             const mailNicolas = {
                 from: `"Sistema ONCO SMART" <${process.env.EMAIL_USER}>`,
-                to: 'nicolas.araujo@ecooncologia.com.br',
+                to: 'centraldeguias@ecooncologia.com.br',
                 subject: `🔔 Verificação Necessária: Paciente ${pacienteNome}`,
                 html: `
                     <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
@@ -1357,7 +1357,7 @@ async function enviarResumoPrescricoes() {
 
             const mailOptions = {
                 from: '"ONCO SMART" <' + process.env.EMAIL_USER + '>',
-                to: 'nicolas.araujo@ecooncologia.com.br',
+                to: 'centraldeguias@ecooncologia.com.br',
                 subject: `📊 Resumo Diário de Prescrições (${result.rows.length} encontradas)`,
                 html: `
                     <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; max-width: 800px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 25px; margin: 0 auto;">
