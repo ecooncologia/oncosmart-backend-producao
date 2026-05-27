@@ -834,6 +834,8 @@ app.get('/:tabela', async (req, res, next) => {
             
             if (tabela.includes('vita_quimio')) { dbTable = 'plantoes_vita_quimio'; sufixo = '-vita_quimio'; }
             else if (tabela.includes('vita_sobreaviso')) { dbTable = 'plantoes_vita_sobreaviso'; sufixo = '-vita_sobreaviso'; }
+            else if (tabela.includes('vita_batel')) { dbTable = 'plantoes_vita_batel'; sufixo = '-vita_batel'; }
+            else if (tabela.includes('vita_br')) { dbTable = 'plantoes_vita_br'; sufixo = '-vita_br'; }
             else if (tabela.includes('cirurgioes')) { dbTable = 'plantoes_cirurgioes'; sufixo = '-cirurgioes'; }
 
             const [rows] = await pool.query(`SELECT medico_id, DATE_FORMAT(data_plantao, '%Y-%m-%d') as data_str, tipo FROM ${dbTable}`);
@@ -968,6 +970,8 @@ async function handleSave(req, res, next) {
             let dbTable = 'plantoes';
             if (tabela.includes('vita_quimio') || finalId.includes('vita_quimio')) dbTable = 'plantoes_vita_quimio';
             else if (tabela.includes('vita_sobreaviso') || finalId.includes('vita_sobreaviso')) dbTable = 'plantoes_vita_sobreaviso';
+            else if (tabela.includes('vita_batel') || finalId.includes('vita_batel')) dbTable = 'plantoes_vita_batel';
+            else if (tabela.includes('vita_br') || finalId.includes('vita_br')) dbTable = 'plantoes_vita_br';
             else if (tabela.includes('cirurgioes') || finalId.includes('cirurgioes')) dbTable = 'plantoes_cirurgioes';
 
             const partes = finalId.split('-');
