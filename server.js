@@ -978,19 +978,29 @@ async function handleSave(req, res, next) {
             if(!partes[0] || !partes[1]) return res.status(400).json({error: "ID inválido."});
             const anoMes = `${partes[0]}-${partes[1]}`;
 
+            const insertRows = [];
+            const deleteKeys = [];
+
             for (const [medicoId, dias] of Object.entries(dados)) {
                 if (medicoId === 'id_firebase' || medicoId === 'id' || medicoId === 'obs') continue;
                 if (typeof dias !== 'object' || dias === null) continue;
                 for (const [dia, tipo] of Object.entries(dias)) {
                     if (isNaN(dia) || dia === null || dia === '') continue;
                     const dataPlantao = `${anoMes}-${String(dia).padStart(2,'0')}`;
-                    try {
-                        await pool.query(`DELETE FROM ${dbTable} WHERE medico_id=? AND data_plantao=?`, [medicoId, dataPlantao]);
-                        if (tipo && ['M', 'T', 'M/T', 'S'].includes(tipo)) {
-                            await pool.query(`INSERT INTO ${dbTable} (medico_id, data_plantao, tipo) VALUES (?, ?, ?)`, [medicoId, dataPlantao, tipo]);
-                        }
-                    } catch (sqlError) {}
+                    deleteKeys.push([medicoId, dataPlantao]);
+                    if (tipo && ['M', 'T', 'M/T', 'S'].includes(tipo)) {
+                        insertRows.push([medicoId, dataPlantao, tipo]);
+                    }
                 }
+            }
+
+            if (deleteKeys.length > 0) {
+                const placeholders = deleteKeys.map(() => '(medico_id=? AND data_plantao=?)').join(' OR ');
+                const flatParams = deleteKeys.flat();
+                await pool.query(`DELETE FROM ${dbTable} WHERE ${placeholders}`, flatParams);
+            }
+            if (insertRows.length > 0) {
+                await pool.query(`INSERT INTO ${dbTable} (medico_id, data_plantao, tipo) VALUES ?`, [insertRows]);
             }
             return res.json({ success: true });
         }
