@@ -199,29 +199,79 @@ app.get('/view_vita', async (req, res) => {
         }
 
         connection = await oracledb.getConnection(dbConfigOracle);
-        
+
+        const [anoFiltro, mesFiltroNum] = mesFiltro.split('-');
+
         const querySql = `
-            SELECT 
-                nm_pessoa_fisica, 
-                nr_prescricao, 
-                dt_atendimento, 
-                ds_material_conta, 
-                ds_material, 
-                dose_real_custo, 
-                custo_antigo, 
-                vl_custo_unitario_manip, 
-                custo_total_antigo 
+            SELECT
+                nm_pessoa_fisica,
+                nr_prescricao,
+                dt_atendimento,
+                ds_material_conta,
+                ds_material,
+                dose_real_custo,
+                custo_antigo,
+                vl_custo_unitario_manip,
+                custo_total_antigo
             FROM TASY.view_vita
+            WHERE EXTRACT(YEAR  FROM dt_atendimento) = :ano
+              AND EXTRACT(MONTH FROM dt_atendimento) = :mes
         `;
-        
-        const result = await connection.execute(querySql);
-        
+
+        const result = await connection.execute(querySql, {
+            ano: parseInt(anoFiltro, 10),
+            mes: parseInt(mesFiltroNum, 10)
+        });
+
         console.log(`✅ [Oracle] view_vita consultada com sucesso. ${result.rows.length} registros (Mês: ${mesFiltro}).`);
         res.json(result.rows);
         
     } catch (err) {
         console.error("❌ [Oracle] Erro fatal na rota /view_vita:", err.message);
         res.status(500).json({ error: "Erro ao buscar dados da view_vita: " + err.message });
+    } finally {
+        if (connection) {
+            try { await connection.close(); } catch (e) { console.error(e); }
+        }
+    }
+});
+
+app.get('/conta_paciente_eco', async (req, res) => {
+    let connection;
+    try {
+        const mesFiltro = req.query.mes;
+
+        if (!mesFiltro) {
+            return res.status(400).json({ error: "Mês não informado (esperado: AAAA-MM)." });
+        }
+
+        const [anoFiltro, mesFiltroNum] = mesFiltro.split('-');
+
+        connection = await oracledb.getConnection(dbConfigOracle);
+
+        const querySql = `
+            SELECT
+                nm_pessoa_fisica,
+                dt_entrada,
+                nr_atendimento,
+                nr_interno_conta,
+                valor_conta
+            FROM tasy.CONTA_PACIENTE_ECO
+            WHERE EXTRACT(YEAR  FROM dt_entrada) = :ano
+              AND EXTRACT(MONTH FROM dt_entrada) = :mes
+        `;
+
+        const result = await connection.execute(querySql, {
+            ano: parseInt(anoFiltro, 10),
+            mes: parseInt(mesFiltroNum, 10)
+        });
+
+        console.log(`✅ [Oracle] conta_paciente_eco: ${result.rows.length} registros (Mês: ${mesFiltro}).`);
+        res.json(result.rows);
+
+    } catch (err) {
+        console.error("❌ [Oracle] Erro na rota /conta_paciente_eco:", err.message);
+        res.status(500).json({ error: "Erro ao buscar dados de faturamento: " + err.message });
     } finally {
         if (connection) {
             try { await connection.close(); } catch (e) { console.error(e); }
@@ -968,26 +1018,20 @@ async function handleSave(req, res, next) {
             const anoMes = `${partes[0]}-${partes[1]}`;
 
             const insertRows = [];
-            const deleteKeys = [];
 
             for (const [medicoId, dias] of Object.entries(dados)) {
                 if (medicoId === 'id_firebase' || medicoId === 'id' || medicoId === 'obs') continue;
                 if (typeof dias !== 'object' || dias === null) continue;
                 for (const [dia, tipo] of Object.entries(dias)) {
                     if (isNaN(dia) || dia === null || dia === '') continue;
-                    const dataPlantao = `${anoMes}-${String(dia).padStart(2,'0')}`;
-                    deleteKeys.push([medicoId, dataPlantao]);
                     if (tipo && ['M', 'T', 'M/T', 'S'].includes(tipo)) {
-                        insertRows.push([medicoId, dataPlantao, tipo]);
+                        insertRows.push([medicoId, `${anoMes}-${String(dia).padStart(2,'0')}`, tipo]);
                     }
                 }
             }
 
-            if (deleteKeys.length > 0) {
-                const placeholders = deleteKeys.map(() => '(medico_id=? AND data_plantao=?)').join(' OR ');
-                const flatParams = deleteKeys.flat();
-                await pool.query(`DELETE FROM ${dbTable} WHERE ${placeholders}`, flatParams);
-            }
+            // Deleta o mês inteiro da tabela antes de reinserir — evita ER_DUP_ENTRY
+            await pool.query(`DELETE FROM ${dbTable} WHERE DATE_FORMAT(data_plantao, '%Y-%m') = ?`, [anoMes]);
             if (insertRows.length > 0) {
                 await pool.query(`INSERT INTO ${dbTable} (medico_id, data_plantao, tipo) VALUES ?`, [insertRows]);
             }
