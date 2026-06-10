@@ -284,7 +284,7 @@ async function processarFilaCompleta(pacientesPendentes) {
         console.log("🗺️ Passo 5: Clicando em 'Consulta de autorizações de internamento'...");
         await page.waitForSelector('#prestador_6', { visible: true, timeout: 30000 });
         await page.click('#prestador_6');
-        await new Promise(r => setTimeout(r, 5000));
+        await new Promise(r => setTimeout(r, 12000)); // aguarda React renderizar o botão "Acessar"
 
         // A partir daqui, 'page' é a pagPrincipal (tem o botão "Acessar")
         const pagPrincipal = page;
@@ -318,15 +318,34 @@ async function processarFilaCompleta(pacientesPendentes) {
             try {
                 await pagPrincipal.bringToFront();
 
+                // Garante que ainda estamos na página correta; se não, renavega
+                const urlAtual = pagPrincipal.url();
+                if (!urlAtual.includes('consulta-autorizacoes')) {
+                    console.log(`⚠️ ${pos} Página principal mudou (${urlAtual}). Renavenando...`);
+                    await pagPrincipal.goto(urlPrincipal, { waitUntil: 'networkidle2', timeout: 60000 });
+                    await new Promise(r => setTimeout(r, 12000));
+                }
+
+                console.log(`👉 ${pos} Aguardando botão 'Acessar'...`);
+                // Primeira tentativa com timeout curto; se falhar, recarrega a página e tenta de novo
+                const encontrouBotao = await pagPrincipal.waitForSelector('button.custom-button.btn-primary', { visible: true, timeout: 15000 })
+                    .then(() => true).catch(() => false);
+
+                if (!encontrouBotao) {
+                    console.log(`⚠️ ${pos} Botão não encontrado. Recarregando página principal...`);
+                    await pagPrincipal.reload({ waitUntil: 'networkidle2', timeout: 60000 });
+                    await new Promise(r => setTimeout(r, 12000));
+                    await pagPrincipal.waitForSelector('button.custom-button.btn-primary', { visible: true, timeout: 20000 });
+                }
+
                 console.log(`👉 ${pos} Clicando no botão 'Acessar'...`);
-                await pagPrincipal.waitForSelector('button.custom-button.btn-primary', { visible: true, timeout: 30000 }); 
                 await pagPrincipal.evaluate(() => {
                     const btn = Array.from(document.querySelectorAll('button')).find(el => el.innerText.includes('Acessar'));
                     if(btn) btn.click();
                 });
-                
+
                 console.log(`⏳ ${pos} Aguardando nova aba abrir (15s)...`);
-                await new Promise(r => setTimeout(r, 15000)); 
+                await new Promise(r => setTimeout(r, 15000));
 
                 const allPages = await browser.pages();
                 if (allPages.length < 2) throw new Error("A nova aba não abriu a tempo.");
