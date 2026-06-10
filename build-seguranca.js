@@ -25,35 +25,33 @@ const checkOnly = process.argv.includes('--check');
 const OBF_OPTIONS = {
     compact: true,
     controlFlowFlattening: true,
-    controlFlowFlatteningThreshold: 0.75,
-    deadCodeInjection: true,
-    deadCodeInjectionThreshold: 0.4,
-    debugProtection: true,           // dificulta uso do debugger no DevTools
-    debugProtectionInterval: 2000,
-    disableConsoleOutput: false,     // já tratamos no código
+    controlFlowFlatteningThreshold: 0.3,
+    deadCodeInjection: false,
+    debugProtection: true,
+    debugProtectionInterval: 0,      // 0 = apenas na carga, sem loop contínuo
+    disableConsoleOutput: false,
     identifierNamesGenerator: 'hexadecimal',
     log: false,
-    numbersToExpressions: true,
-    renameGlobals: false,            // não renomeia globals para não quebrar HTML
-    selfDefending: true,             // o código se protege contra formatação
+    numbersToExpressions: false,
+    renameGlobals: false,
+    selfDefending: true,
     simplify: true,
     splitStrings: true,
-    splitStringsChunkLength: 5,
+    splitStringsChunkLength: 20,
     stringArray: true,
     stringArrayCallsTransform: true,
-    stringArrayCallsTransformThreshold: 0.75,
+    stringArrayCallsTransformThreshold: 0.5,
     stringArrayEncoding: ['base64'],
     stringArrayIndexShift: true,
     stringArrayRotate: true,
     stringArrayShuffle: true,
-    stringArrayWrappersCount: 2,
+    stringArrayWrappersCount: 1,
     stringArrayWrappersChainedCalls: true,
-    stringArrayWrappersParametersMaxCount: 4,
+    stringArrayWrappersParametersMaxCount: 2,
     stringArrayWrappersType: 'function',
-    stringArrayThreshold: 0.75,
-    transformObjectKeys: true,
+    stringArrayThreshold: 0.5,
+    transformObjectKeys: false,
     unicodeEscapeSequence: false,
-    // Garante que sourceMap não vaze o código original
     sourceMap: false,
 };
 

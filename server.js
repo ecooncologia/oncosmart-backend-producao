@@ -1061,7 +1061,7 @@ async function handleSave(req, res, next) {
             const valName = dados.name || dados.titulo_principal || 'Sem Nome';
             const safeStatus = dados.status || null;
 
-            await pool.query(`INSERT INTO painAssessments (id_firebase, data_registro, titulo_principal, origin, status, atendido, pain_level, pain_emoji, emotion, care_need, dados_extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), atendido=VALUES(atendido), pain_level=VALUES(pain_level), pain_emoji=VALUES(pain_emoji), emotion=VALUES(emotion), care_need=VALUES(care_need), dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [finalId, limparData(dados.timestamp), valName, dados.origin || null, safeStatus, dados.atendido ? 1 : 0, valPain, valEmoji, valEmotion, valCare, JSON.stringify(dados), JSON.stringify(dados)]);
+            await pool.query(`INSERT INTO painAssessments (id_firebase, data_registro, titulo_principal, origin, status, atendido, pain_level, pain_emoji, emotion, care_need, dados_extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE data_registro = COALESCE(VALUES(data_registro), data_registro), status=VALUES(status), atendido=VALUES(atendido), pain_level=VALUES(pain_level), pain_emoji=VALUES(pain_emoji), emotion=VALUES(emotion), care_need=VALUES(care_need), dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [finalId, limparData(dados.timestamp), valName, dados.origin || null, safeStatus, dados.atendido ? 1 : 0, valPain, valEmoji, valEmotion, valCare, JSON.stringify(dados), JSON.stringify(dados)]);
         }
         else if (tabelaSQL === 'helpdesk_tickets') {
             if (!id && req.method === 'POST') avisarTeams(dados); 
