@@ -291,6 +291,22 @@ async function processarFilaCompleta(pacientesPendentes) {
         const urlPrincipal = pagPrincipal.url();
         console.log(`📌 Página principal salva: ${urlPrincipal}`);
 
+        // Renavelga pelo menu até reaparecer o botão "Acessar"
+        async function renavegar() {
+            console.log('🔄 Renavegando pelo menu para reexibir o botão Acessar...');
+            await pagPrincipal.goto('https://www.unimedcuritiba.com.br/app/home-prestador', { waitUntil: 'networkidle2', timeout: 60000 });
+            await new Promise(r => setTimeout(r, 8000));
+            await pagPrincipal.waitForSelector('#prestador_0', { visible: true, timeout: 30000 });
+            await pagPrincipal.click('#prestador_0');
+            await new Promise(r => setTimeout(r, 5000));
+            await pagPrincipal.waitForSelector('#prestador_1', { visible: true, timeout: 30000 });
+            await pagPrincipal.click('#prestador_1');
+            await new Promise(r => setTimeout(r, 5000));
+            await pagPrincipal.waitForSelector('#prestador_6', { visible: true, timeout: 30000 });
+            await pagPrincipal.click('#prestador_6');
+            await new Promise(r => setTimeout(r, 12000));
+        }
+
         // ---------------------------------------------------------
         // 3. LOOP DA FILA — ABRE/FECHA ABA PARA CADA PACIENTE
         // ---------------------------------------------------------
@@ -327,14 +343,13 @@ async function processarFilaCompleta(pacientesPendentes) {
                 }
 
                 console.log(`👉 ${pos} Aguardando botão 'Acessar'...`);
-                // Primeira tentativa com timeout curto; se falhar, recarrega a página e tenta de novo
+                // Primeira tentativa rápida; se falhar, renavelga pelo menu (reload não exibe o botão)
                 const encontrouBotao = await pagPrincipal.waitForSelector('button.custom-button.btn-primary', { visible: true, timeout: 15000 })
                     .then(() => true).catch(() => false);
 
                 if (!encontrouBotao) {
-                    console.log(`⚠️ ${pos} Botão não encontrado. Recarregando página principal...`);
-                    await pagPrincipal.reload({ waitUntil: 'networkidle2', timeout: 60000 });
-                    await new Promise(r => setTimeout(r, 12000));
+                    console.log(`⚠️ ${pos} Botão não encontrado. Renavegando pelo menu...`);
+                    await renavegar();
                     await pagPrincipal.waitForSelector('button.custom-button.btn-primary', { visible: true, timeout: 20000 });
                 }
 
