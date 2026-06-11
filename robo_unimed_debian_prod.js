@@ -266,25 +266,59 @@ async function processarFilaCompleta(pacientesPendentes) {
             throw new Error("Execução abortada para análise do Print de Erro.");
         }
 
+        // 🚨 AUTODIAGNÓSTICO DE NAVEGAÇÃO: print + lista de links/botões da tela
+        async function dumpDebugNavegacao(etiqueta) {
+            try {
+                const debugPath = path.resolve(printsDir, `DEBUG_${etiqueta}_${Date.now()}.png`);
+                await page.screenshot({ path: debugPath, fullPage: true });
+                const info = await page.evaluate(() => ({
+                    url: location.href,
+                    links: Array.from(document.querySelectorAll('a, button'))
+                        .filter(el => (el.innerText || '').trim())
+                        .map(el => `<${el.tagName.toLowerCase()} class="${el.className}" href="${el.getAttribute('href') || ''}"> "${(el.innerText || '').trim().substring(0, 50)}"`)
+                        .slice(0, 30),
+                    textoTela: document.body.innerText.substring(0, 400).replace(/\n+/g, ' | ')
+                }));
+                console.log(`🔗 [${etiqueta}] URL atual: ${info.url}`);
+                console.log(`🔘 [${etiqueta}] Links/botões na tela:\n${info.links.join('\n')}`);
+                console.log(`📄 [${etiqueta}] Texto da tela: "${info.textoTela}"`);
+                console.log(`📸 [${etiqueta}] PRINT SALVO: ${debugPath}`);
+            } catch (e) { console.log(`⚠️ Falha ao gerar debug: ${e.message}`); }
+        }
+
         console.log('🖥️ Passo 2: Clicando em "Minha área de trabalho"...');
-        await page.waitForSelector('a[href="/app/home-prestador"]', { visible: true, timeout: 30000 }); 
-        await page.evaluate(() => document.querySelector('a[href="/app/home-prestador"]').click());
-        await new Promise(r => setTimeout(r, 10000)); 
+        const achouLinkMenu = await page.waitForSelector('a[href="/app/home-prestador"]', { visible: true, timeout: 15000 })
+            .then(() => true).catch(() => false);
 
-        console.log('📁 Passo 3: Clicando na "Área de Trabalho"...');
-        await page.waitForSelector('#prestador_0', { visible: true, timeout: 30000 });
-        await page.click('#prestador_0');
-        await new Promise(r => setTimeout(r, 5000)); 
+        if (achouLinkMenu) {
+            await page.evaluate(() => document.querySelector('a[href="/app/home-prestador"]').click());
+        } else {
+            // O menu do perfil pode não ter aberto — vai direto pela URL
+            console.log('⚠️ Link do menu não apareceu. Navegando direto para /app/home-prestador...');
+            await page.goto('https://www.unimedcuritiba.com.br/app/home-prestador', { waitUntil: 'networkidle2', timeout: 60000 });
+        }
+        await new Promise(r => setTimeout(r, 10000));
 
-        console.log("🗺️ Passo 4: Clicando em 'Operações / Autorizações'...");
-        await page.waitForSelector('#prestador_1', { visible: true, timeout: 30000 });
-        await page.click('#prestador_1');
-        await new Promise(r => setTimeout(r, 5000));
+        try {
+            console.log('📁 Passo 3: Clicando na "Área de Trabalho"...');
+            await page.waitForSelector('#prestador_0', { visible: true, timeout: 30000 });
+            await page.click('#prestador_0');
+            await new Promise(r => setTimeout(r, 5000));
 
-        console.log("🗺️ Passo 5: Clicando em 'Consulta de autorizações de internamento'...");
-        await page.waitForSelector('#prestador_6', { visible: true, timeout: 30000 });
-        await page.click('#prestador_6');
-        await new Promise(r => setTimeout(r, 12000)); // aguarda React renderizar o botão "Acessar"
+            console.log("🗺️ Passo 4: Clicando em 'Operações / Autorizações'...");
+            await page.waitForSelector('#prestador_1', { visible: true, timeout: 30000 });
+            await page.click('#prestador_1');
+            await new Promise(r => setTimeout(r, 5000));
+
+            console.log("🗺️ Passo 5: Clicando em 'Consulta de autorizações de internamento'...");
+            await page.waitForSelector('#prestador_6', { visible: true, timeout: 30000 });
+            await page.click('#prestador_6');
+            await new Promise(r => setTimeout(r, 12000)); // aguarda React renderizar o botão "Acessar"
+        } catch (erroNav) {
+            console.log(`\n❌ ERRO NA NAVEGAÇÃO (Passos 3-5): ${erroNav.message}`);
+            await dumpDebugNavegacao('ERRO_NAVEGACAO');
+            throw erroNav;
+        }
 
         // A partir daqui, 'page' é a pagPrincipal (tem o botão "Acessar")
         const pagPrincipal = page;
