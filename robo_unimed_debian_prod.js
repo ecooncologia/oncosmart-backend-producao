@@ -307,6 +307,29 @@ async function processarFilaCompleta(pacientesPendentes) {
             await new Promise(r => setTimeout(r, 12000));
         }
 
+        // Procura o botão "Acessar" pelo TEXTO em todos os frames (inclusive iframes)
+        // e clica nele assim que aparecer. Retorna true se clicou.
+        async function aguardarEClicarAcessar(timeoutMs) {
+            const inicio = Date.now();
+            while (Date.now() - inicio < timeoutMs) {
+                for (const frame of pagPrincipal.frames()) {
+                    try {
+                        const clicou = await frame.evaluate(() => {
+                            const btns = Array.from(document.querySelectorAll('button, a'));
+                            const alvo = btns.find(b =>
+                                (b.innerText || '').trim().startsWith('Acessar') && b.offsetParent !== null
+                            );
+                            if (alvo) { alvo.click(); return true; }
+                            return false;
+                        });
+                        if (clicou) return true;
+                    } catch (e) { /* frame pode ter navegado no meio; ignora e tenta de novo */ }
+                }
+                await new Promise(r => setTimeout(r, 2000));
+            }
+            return false;
+        }
+
         // ---------------------------------------------------------
         // 3. LOOP DA FILA — ABRE/FECHA ABA PARA CADA PACIENTE
         // ---------------------------------------------------------
@@ -342,18 +365,15 @@ async function processarFilaCompleta(pacientesPendentes) {
                     await new Promise(r => setTimeout(r, 12000));
                 }
 
-                console.log(`👉 ${pos} Aguardando botão 'Acessar'...`);
-                // Primeira tentativa rápida; se falhar, renavelga pelo menu (reload não exibe o botão)
-                const encontrouBotao = await pagPrincipal.waitForSelector('button.custom-button.btn-primary', { visible: true, timeout: 15000 })
-                    .then(() => true).catch(() => false);
+                console.log(`👉 ${pos} Procurando e clicando no botão 'Acessar' (busca por texto em todos os frames)...`);
+                let clicouAcessar = await aguardarEClicarAcessar(20000);
 
-                if (!encontrouBotao) {
+                if (!clicouAcessar) {
                     console.log(`⚠️ ${pos} Botão não encontrado. Renavegando pelo menu...`);
                     await renavegar();
-                    const achouAposRenavegar = await pagPrincipal.waitForSelector('button.custom-button.btn-primary', { visible: true, timeout: 20000 })
-                        .then(() => true).catch(() => false);
+                    clicouAcessar = await aguardarEClicarAcessar(25000);
 
-                    if (!achouAposRenavegar) {
+                    if (!clicouAcessar) {
                         // 🚨 AUTODIAGNÓSTICO: mostra o que o robô está enxergando na tela
                         const debugPath = path.resolve(printsDir, `DEBUG_BOTAO_ACESSAR_${Date.now()}.png`);
                         await pagPrincipal.screenshot({ path: debugPath, fullPage: true });
@@ -374,12 +394,7 @@ async function processarFilaCompleta(pacientesPendentes) {
                     }
                 }
 
-                console.log(`👉 ${pos} Clicando no botão 'Acessar'...`);
-                await pagPrincipal.evaluate(() => {
-                    const btn = Array.from(document.querySelectorAll('button')).find(el => el.innerText.includes('Acessar'));
-                    if(btn) btn.click();
-                });
-
+                console.log(`✅ ${pos} Botão 'Acessar' clicado!`);
                 console.log(`⏳ ${pos} Aguardando nova aba abrir (15s)...`);
                 await new Promise(r => setTimeout(r, 15000));
 
