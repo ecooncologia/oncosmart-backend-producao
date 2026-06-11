@@ -350,7 +350,28 @@ async function processarFilaCompleta(pacientesPendentes) {
                 if (!encontrouBotao) {
                     console.log(`⚠️ ${pos} Botão não encontrado. Renavegando pelo menu...`);
                     await renavegar();
-                    await pagPrincipal.waitForSelector('button.custom-button.btn-primary', { visible: true, timeout: 20000 });
+                    const achouAposRenavegar = await pagPrincipal.waitForSelector('button.custom-button.btn-primary', { visible: true, timeout: 20000 })
+                        .then(() => true).catch(() => false);
+
+                    if (!achouAposRenavegar) {
+                        // 🚨 AUTODIAGNÓSTICO: mostra o que o robô está enxergando na tela
+                        const debugPath = path.resolve(printsDir, `DEBUG_BOTAO_ACESSAR_${Date.now()}.png`);
+                        await pagPrincipal.screenshot({ path: debugPath, fullPage: true });
+                        const info = await pagPrincipal.evaluate(() => ({
+                            url: location.href,
+                            botoes: Array.from(document.querySelectorAll('button, a.btn, a[class*="button"]'))
+                                .map(b => `[class="${b.className}"] texto="${(b.innerText || '').trim().substring(0, 50)}"`)
+                                .slice(0, 25),
+                            iframes: Array.from(document.querySelectorAll('iframe')).map(f => f.src || '(sem src)'),
+                            textoTela: document.body.innerText.substring(0, 400).replace(/\n+/g, ' | ')
+                        }));
+                        console.log(`🔗 ${pos} URL atual: ${info.url}`);
+                        console.log(`🔘 ${pos} Botões visíveis no DOM:\n${info.botoes.join('\n')}`);
+                        console.log(`🖼️ ${pos} Iframes na página: ${JSON.stringify(info.iframes)}`);
+                        console.log(`📄 ${pos} Texto da tela: "${info.textoTela}"`);
+                        console.log(`📸 ${pos} PRINT DE DEPURAÇÃO SALVO: ${debugPath}`);
+                        throw new Error("Botão 'Acessar' não apareceu nem após renavegar (veja o print de depuração).");
+                    }
                 }
 
                 console.log(`👉 ${pos} Clicando no botão 'Acessar'...`);
