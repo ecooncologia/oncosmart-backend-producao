@@ -612,13 +612,20 @@ async function processarFilaPendentes() {
             const nomePaciente = dados.nome || dados.Nome || dados.NOME || 'Sem Nome';
             const numCarteirinha = dados.carteirinha || dados.Carteirinha || dados.CARTEIRINHA || '';
             const dataSol = dados.data_solicitacao || dados.Data_solicitacao || dados.Data_Solicitacao || dados.dataSolicitacao || '';
-            
+            const convenio = String(dados.convenio || 'UNIMED').toUpperCase().trim();
+
             const statusRaw = dados.status || dados.Status || dados.STATUS || '';
             const statusAtual = String(statusRaw).toLowerCase().trim();
-            
-            console.log(`🔎 ID: ${row.id_firebase} | Paciente: ${nomePaciente} | Status no Banco: "${statusRaw}"`);
+
+            console.log(`🔎 ID: ${row.id_firebase} | Paciente: ${nomePaciente} | Convênio: ${convenio} | Status no Banco: "${statusRaw}"`);
 
             if (statusAtual === 'pendente' || statusAtual.includes('fila')) {
+                // 🏥 Por enquanto o robô só automatiza a UNIMED.
+                // SELECT terá fluxo próprio (a implementar); BRADESCO e COPEL ficam de fora.
+                if (convenio !== 'UNIMED') {
+                    console.log(`⏭️ Pulando ${nomePaciente}: convênio ${convenio} ainda não automatizado pelo robô.`);
+                    return;
+                }
                 pacientesPendentes.push({
                     id: row.id_firebase,
                     nome: nomePaciente,
