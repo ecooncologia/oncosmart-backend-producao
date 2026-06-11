@@ -674,12 +674,12 @@ async function processarFilaPendentes() {
                     
                     await transporter.sendMail({
                         from: `"Sistema ONCO SMART" <${process.env.EMAIL_USER}>`, 
-                        to: 'nicolas.araujo@ecooncologia.com.br', 
+                        to: 'centraldeguias@ecooncologia.com.br',
                         subject: `🟢 Autorização Liberada: Paciente ${pac.nome}`,
                         html: `
                             <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
                                 <h2 style="color: #0056b3;">Autorização Unimed Concluída</h2>
-                                <p>Olá Nicolas,</p>
+                                <p>Olá, Central de Guias,</p>
                                 <p>O paciente <strong>${pac.nome}</strong> teve a sua guia autorizada na Unimed referente à data de solicitação <strong>${dataFormatadaBR}</strong>.</p>
                                 <p>O print da tela de aprovação segue em anexo a este e-mail. A guia também já está disponível para sua análise no sistema ONCO SMART.</p>
                                 <br>
