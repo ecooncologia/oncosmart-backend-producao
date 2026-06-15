@@ -230,9 +230,32 @@ async function processarFilaCompleta(pacientesPendentes) {
                 if (analise === 'sucesso') {
                     console.log('✅ ESTAMOS DENTRO DA ÁREA LOGADA!');
                     loginSucesso = true;
-                    break; 
+                    break;
                 } else {
-                    console.log(`⚠️ A Tentativa ${tentativa} falhou em achar o menu. Tentando de novo...`);
+                    console.log(`⚠️ A Tentativa ${tentativa} falhou no login. Tentando de novo...`);
+                    // 🚨 AUTODIAGNÓSTICO DE LOGIN: print + mensagens de erro/estado do captcha
+                    try {
+                        const debugPath = path.resolve(printsDir, `DEBUG_LOGIN_FALHA_T${tentativa}_${Date.now()}.png`);
+                        await page.screenshot({ path: debugPath, fullPage: true });
+                        const diag = await page.evaluate(() => {
+                            const txt = (document.body.innerText || '').replace(/\n+/g, ' | ');
+                            const erros = Array.from(document.querySelectorAll('.error, .erro, .alert, [class*="error"], [class*="invalid"], .mat-error, [role="alert"]'))
+                                .map(el => (el.innerText || '').trim()).filter(Boolean).slice(0, 10);
+                            const ta = document.getElementById('g-recaptcha-response');
+                            return {
+                                url: location.href,
+                                temToken: !!(ta && ta.value && ta.value.length > 20),
+                                temCampoEmail: !!document.querySelector('input[type="email"]'),
+                                mensagensErro: erros,
+                                texto: txt.substring(0, 500)
+                            };
+                        });
+                        console.log(`🔗 [LOGIN_FALHA T${tentativa}] URL: ${diag.url}`);
+                        console.log(`🔐 [LOGIN_FALHA T${tentativa}] token captcha presente na tela: ${diag.temToken} | campo e-mail visível: ${diag.temCampoEmail}`);
+                        console.log(`🚩 [LOGIN_FALHA T${tentativa}] mensagens de erro: ${diag.mensagensErro.length ? JSON.stringify(diag.mensagensErro) : '(nenhuma encontrada)'}`);
+                        console.log(`📄 [LOGIN_FALHA T${tentativa}] texto da tela: "${diag.texto}"`);
+                        console.log(`📸 [LOGIN_FALHA T${tentativa}] PRINT SALVO: ${debugPath}`);
+                    } catch (eDiag) { console.log(`⚠️ Falha ao gerar diagnóstico de login: ${eDiag.message}`); }
                 }
 
             } catch (erroLoop) {
