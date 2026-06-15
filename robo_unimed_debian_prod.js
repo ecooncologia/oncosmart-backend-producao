@@ -214,7 +214,16 @@ async function processarFilaCompleta(pacientesPendentes) {
                 await new Promise(r => setTimeout(r, 20000)); 
                 
                 const analise = await page.evaluate(() => {
-                    if (document.querySelector('.icone-person') || document.body.innerText.includes('Área de trabalho')) return 'sucesso';
+                    // Falha real: ainda estamos na tela de login (sessão não autenticada)
+                    if (/\/login/.test(location.href) ||
+                        /Bem-vindo à sua Unimed|Acesse sua área|Faça seu cadastro/.test(document.body.innerText)) {
+                        return 'falha';
+                    }
+                    // Sucesso real: já estamos na área logada (/app) ou o menu logado existe
+                    if (location.pathname.startsWith('/app') ||
+                        document.querySelector('a[href="/app/home-prestador"]')) {
+                        return 'sucesso';
+                    }
                     return 'falha';
                 });
 
