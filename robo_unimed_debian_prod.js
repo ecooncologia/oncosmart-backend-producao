@@ -233,10 +233,8 @@ async function processarFilaCompleta(pacientesPendentes) {
                     break;
                 } else {
                     console.log(`⚠️ A Tentativa ${tentativa} falhou no login. Tentando de novo...`);
-                    // 🚨 AUTODIAGNÓSTICO DE LOGIN: print + mensagens de erro/estado do captcha
+                    // 🚨 AUTODIAGNÓSTICO DE LOGIN: mensagens de erro/estado do captcha
                     try {
-                        const debugPath = path.resolve(printsDir, `DEBUG_LOGIN_FALHA_T${tentativa}_${Date.now()}.png`);
-                        await page.screenshot({ path: debugPath, fullPage: true });
                         const diag = await page.evaluate(() => {
                             const txt = (document.body.innerText || '').replace(/\n+/g, ' | ');
                             const erros = Array.from(document.querySelectorAll('.error, .erro, .alert, [class*="error"], [class*="invalid"], .mat-error, [role="alert"]'))
@@ -254,7 +252,6 @@ async function processarFilaCompleta(pacientesPendentes) {
                         console.log(`🔐 [LOGIN_FALHA T${tentativa}] token captcha presente na tela: ${diag.temToken} | campo e-mail visível: ${diag.temCampoEmail}`);
                         console.log(`🚩 [LOGIN_FALHA T${tentativa}] mensagens de erro: ${diag.mensagensErro.length ? JSON.stringify(diag.mensagensErro) : '(nenhuma encontrada)'}`);
                         console.log(`📄 [LOGIN_FALHA T${tentativa}] texto da tela: "${diag.texto}"`);
-                        console.log(`📸 [LOGIN_FALHA T${tentativa}] PRINT SALVO: ${debugPath}`);
                     } catch (eDiag) { console.log(`⚠️ Falha ao gerar diagnóstico de login: ${eDiag.message}`); }
                 }
 
@@ -280,29 +277,20 @@ async function processarFilaCompleta(pacientesPendentes) {
             });
             await new Promise(r => setTimeout(r, 6000)); 
         } catch (erroPasso1) {
-            // 🚨 SISTEMA DE CAPTURA DE ERRO 🚨
+            // 🚨 CAPTURA DE ERRO
             console.log('\n❌ ERRO NO PASSO 1: O ícone de perfil não apareceu na tela!');
             console.log('🔗 URL atual:', page.url());
-            
-            // Tira um print da tela inteira
-            const debugPath = path.resolve(__dirname, 'public', 'prints', `DEBUG_ERRO_MENU_${Date.now()}.png`);
-            await page.screenshot({ path: debugPath, fullPage: true });
-            
-            console.log(`📸 PRINT DE DEPURACÃO SALVO EM: ${debugPath}`);
-            console.log('🧐 Abra este arquivo no seu painel para vermos o que travou o robô!');
-            
+
             // Pega o texto da tela para ajudar na leitura
             const textoTela = await page.evaluate(() => document.body.innerText.substring(0, 300).replace(/\n/g, ' '));
             console.log(`📄 Texto visível na tela: "${textoTela}..."`);
-            
-            throw new Error("Execução abortada para análise do Print de Erro.");
+
+            throw new Error("Execução abortada: ícone de perfil não apareceu no Passo 1.");
         }
 
-        // 🚨 AUTODIAGNÓSTICO DE NAVEGAÇÃO: print + lista de links/botões da tela
+        // 🚨 AUTODIAGNÓSTICO DE NAVEGAÇÃO: lista de links/botões da tela
         async function dumpDebugNavegacao(etiqueta) {
             try {
-                const debugPath = path.resolve(printsDir, `DEBUG_${etiqueta}_${Date.now()}.png`);
-                await page.screenshot({ path: debugPath, fullPage: true });
                 const info = await page.evaluate(() => ({
                     url: location.href,
                     links: Array.from(document.querySelectorAll('a, button'))
@@ -314,7 +302,6 @@ async function processarFilaCompleta(pacientesPendentes) {
                 console.log(`🔗 [${etiqueta}] URL atual: ${info.url}`);
                 console.log(`🔘 [${etiqueta}] Links/botões na tela:\n${info.links.join('\n')}`);
                 console.log(`📄 [${etiqueta}] Texto da tela: "${info.textoTela}"`);
-                console.log(`📸 [${etiqueta}] PRINT SALVO: ${debugPath}`);
             } catch (e) { console.log(`⚠️ Falha ao gerar debug: ${e.message}`); }
         }
 
@@ -441,8 +428,6 @@ async function processarFilaCompleta(pacientesPendentes) {
 
                     if (!clicouAcessar) {
                         // 🚨 AUTODIAGNÓSTICO: mostra o que o robô está enxergando na tela
-                        const debugPath = path.resolve(printsDir, `DEBUG_BOTAO_ACESSAR_${Date.now()}.png`);
-                        await pagPrincipal.screenshot({ path: debugPath, fullPage: true });
                         const info = await pagPrincipal.evaluate(() => ({
                             url: location.href,
                             botoes: Array.from(document.querySelectorAll('button, a.btn, a[class*="button"]'))
@@ -455,8 +440,7 @@ async function processarFilaCompleta(pacientesPendentes) {
                         console.log(`🔘 ${pos} Botões visíveis no DOM:\n${info.botoes.join('\n')}`);
                         console.log(`🖼️ ${pos} Iframes na página: ${JSON.stringify(info.iframes)}`);
                         console.log(`📄 ${pos} Texto da tela: "${info.textoTela}"`);
-                        console.log(`📸 ${pos} PRINT DE DEPURAÇÃO SALVO: ${debugPath}`);
-                        throw new Error("Botão 'Acessar' não apareceu nem após renavegar (veja o print de depuração).");
+                        throw new Error("Botão 'Acessar' não apareceu nem após renavegar.");
                     }
                 }
 
