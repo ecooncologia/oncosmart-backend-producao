@@ -402,8 +402,10 @@ app.get('/protocolos', async (req, res) => {
                 try { r.tags = JSON.parse(r.tags); } catch(e) { r.tags = []; }
             }
             if (!r.tags) r.tags = [];
-            r.nr_sequencia = r.seq_protocolo; 
-            r.cd_protocolo = r.nm_subtipo ? `${r.nm_protocolo} - ${r.nm_subtipo}` : r.nm_protocolo;
+            r.nr_sequencia = r.seq_protocolo;
+            // cd_protocolo mantém o CÓDIGO real do Tasy (não sobrescrever com o nome).
+            // Nome de exibição fica disponível em nome_completo, sem perder o código.
+            r.nome_completo = r.nm_subtipo ? `${r.nm_protocolo} - ${r.nm_subtipo}` : r.nm_protocolo;
             return r;
         });
 
