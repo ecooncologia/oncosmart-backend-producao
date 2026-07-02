@@ -1300,6 +1300,102 @@ app.get('/:tabela', async (req, res, next) => {
     } catch (e) { res.json({}); }
 });
 
+app.post('/campainhas/nao-operante', async (req, res) => {
+    try {
+        const { campainha_id, campainha_label, motivo, usuario, usuario_id, foto } = req.body;
+        if (!campainha_id || !motivo) return res.status(400).json({ error: 'Faltam parâmetros.' });
+
+        const agora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+
+        const avatarHtml = foto && foto.length > 10
+            ? `<img src="${foto}" style="width:48px;height:48px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:10px;">`
+            : `<span style="display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:50%;background:#00855B;color:#fff;font-weight:800;font-size:18px;vertical-align:middle;margin-right:10px;">${(usuario||'?').charAt(0).toUpperCase()}</span>`;
+
+        const mailHtml = `
+        <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+            <div style="background:#b91c1c;padding:20px 24px;display:flex;align-items:center;gap:14px;">
+                <span style="font-size:2rem;">🔔</span>
+                <div>
+                    <div style="color:#fff;font-size:18px;font-weight:800;">Campainha Não Operante</div>
+                    <div style="color:#fecaca;font-size:13px;">ECO Oncologia — Controles Operacionais</div>
+                </div>
+            </div>
+            <div style="padding:24px;">
+                <table style="width:100%;border-collapse:collapse;font-size:14px;">
+                    <tr><td style="padding:8px 0;color:#64748b;width:130px;font-weight:700;">Campainha:</td><td style="padding:8px 0;font-weight:800;color:#0f172a;">${campainha_label || campainha_id}</td></tr>
+                    <tr><td style="padding:8px 0;color:#64748b;font-weight:700;">Data / Hora:</td><td style="padding:8px 0;color:#0f172a;">${agora}</td></tr>
+                    <tr><td style="padding:8px 0;color:#64748b;font-weight:700;">Registrado por:</td><td style="padding:8px 0;">${avatarHtml}<strong>${usuario || '—'}</strong></td></tr>
+                    <tr><td style="padding:8px 0;color:#64748b;font-weight:700;vertical-align:top;">Motivo:</td><td style="padding:8px 0;color:#b91c1c;font-weight:700;">${motivo}</td></tr>
+                </table>
+            </div>
+            <div style="background:#f8fafc;padding:14px 24px;font-size:11px;color:#94a3b8;border-top:1px solid #e2e8f0;">
+                Enviado automaticamente pelo Onco Smart · ${agora}
+            </div>
+        </div>`;
+
+        await transporter.sendMail({
+            from: `"Onco Smart — ECO" <${process.env.EMAIL_USER}>`,
+            to: 'enfermagem@ecooncologia.com.br',
+            subject: `🔔 Campainha Não Operante: ${campainha_label || campainha_id}`,
+            html: mailHtml,
+        });
+
+        console.log(`📧 [Campainha] E-mail "não operante" enviado — ${campainha_label} — ${usuario}`);
+        res.json({ sucesso: true });
+    } catch(e) {
+        console.error('❌ [Campainha] Erro ao enviar e-mail:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/campainhas/ajustado', async (req, res) => {
+    try {
+        const { campainha_id, campainha_label, usuario, usuario_id, foto } = req.body;
+        if (!campainha_id) return res.status(400).json({ error: 'Faltam parâmetros.' });
+
+        const agora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+
+        const avatarHtml = foto && foto.length > 10
+            ? `<img src="${foto}" style="width:48px;height:48px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:10px;">`
+            : `<span style="display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:50%;background:#00855B;color:#fff;font-weight:800;font-size:18px;vertical-align:middle;margin-right:10px;">${(usuario||'?').charAt(0).toUpperCase()}</span>`;
+
+        const mailHtml = `
+        <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+            <div style="background:#d97706;padding:20px 24px;display:flex;align-items:center;gap:14px;">
+                <span style="font-size:2rem;">🔧</span>
+                <div>
+                    <div style="color:#fff;font-size:18px;font-weight:800;">Campainha Ajustada</div>
+                    <div style="color:#fde68a;font-size:13px;">ECO Oncologia — Controles Operacionais</div>
+                </div>
+            </div>
+            <div style="padding:24px;">
+                <table style="width:100%;border-collapse:collapse;font-size:14px;">
+                    <tr><td style="padding:8px 0;color:#64748b;width:130px;font-weight:700;">Campainha:</td><td style="padding:8px 0;font-weight:800;color:#0f172a;">${campainha_label || campainha_id}</td></tr>
+                    <tr><td style="padding:8px 0;color:#64748b;font-weight:700;">Data / Hora:</td><td style="padding:8px 0;color:#0f172a;">${agora}</td></tr>
+                    <tr><td style="padding:8px 0;color:#64748b;font-weight:700;">Ajustado por:</td><td style="padding:8px 0;">${avatarHtml}<strong>${usuario || '—'}</strong></td></tr>
+                </table>
+                <p style="margin-top:16px;color:#92400e;font-size:13px;">A campainha foi reparada e aguarda confirmação de vistoria.</p>
+            </div>
+            <div style="background:#f8fafc;padding:14px 24px;font-size:11px;color:#94a3b8;border-top:1px solid #e2e8f0;">
+                Enviado automaticamente pelo Onco Smart · ${agora}
+            </div>
+        </div>`;
+
+        await transporter.sendMail({
+            from: `"Onco Smart — ECO" <${process.env.EMAIL_USER}>`,
+            to: 'enfermagem@ecooncologia.com.br',
+            subject: `🔧 Campainha Ajustada: ${campainha_label || campainha_id}`,
+            html: mailHtml,
+        });
+
+        console.log(`📧 [Campainha] E-mail "ajustado" enviado — ${campainha_label} — ${usuario}`);
+        res.json({ sucesso: true });
+    } catch(e) {
+        console.error('❌ [Campainha] Erro ao enviar e-mail:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.post('/notificar-whatsapp', async (req, res) => {
     try {
         const { numero, mensagem } = req.body;
