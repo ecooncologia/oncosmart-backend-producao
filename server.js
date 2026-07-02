@@ -46,22 +46,26 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // 🆕 NOVO - Servir prints do robô Unimed como arquivos estáticos
-app.use('/prints', express.static('~/api-eco-teste/public/prints'));
+app.use('/prints', express.static(path.join(__dirname, 'public', 'prints')));
 
 const CHAVE_MESTRA = process.env.CHAVE_MESTRA; 
 const rotasAbertas = ['/avaliar', '/webhook-review', '/registrar_ponto', '/webhook-ata']; 
 
 app.use((req, res, next) => {
     const portaAcessada = req.socket.localPort;
-    const portasExternas = [parseInt(process.env.PORT_EXTERNA_QR), parseInt(process.env.PORT_EXTERNA_MAKE)]; 
+    const portasExternas = [parseInt(process.env.PORT_EXTERNA_QR), parseInt(process.env.PORT_EXTERNA_MAKE)];
 
-    if (portasExternas.includes(portaAcessada) && !rotasAbertas.includes(req.path)) {
+    // 🏆 Bolão da Copa: única exceção externa — a página (/bolao) e as rotas /bolao/*.
+    // As rotas /bolao/* continuam exigindo a chave de API logo abaixo; todo o resto segue 403 externamente.
+    const ehBolao = req.path === '/bolao' || req.path.startsWith('/bolao/');
+
+    if (portasExternas.includes(portaAcessada) && !rotasAbertas.includes(req.path) && !ehBolao) {
         return res.status(403).json({ erro: "Forbidden: Rota interna não acessível externamente." });
     }
-    if (rotasAbertas.includes(req.path)) {
+    if (rotasAbertas.includes(req.path) || req.path === '/bolao') {
         return next();
     }
-    
+
     const chaveRecebida = req.headers['x-api-key'] || req.query.api_key;
     if (chaveRecebida !== CHAVE_MESTRA) {
         return res.status(401).json({ erro: "Acesso Negado: Área restrita e criptografada." });
@@ -862,6 +866,323 @@ app.post('/caixinha/cobrar', async (req, res) => {
 });
 
 // ============================================================================
+// 🏆 MÓDULO BOLÃO DA COPA 2026
+// Placares via API pública da ESPN (sem chave), com cache de 60s.
+// Pontuação: placar exato = 10 | vencedor/empate + gols de um time = 5 | vencedor/empate = 3
+// ============================================================================
+const BOLAO_ESPN_URL = 'https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates=20260611-20260719&limit=400';
+
+const BOLAO_NOMES_PT = {
+    'Algeria': 'Argélia', 'Argentina': 'Argentina', 'Australia': 'Austrália', 'Austria': 'Áustria',
+    'Belgium': 'Bélgica', 'Bosnia-Herzegovina': 'Bósnia', 'Brazil': 'Brasil', 'Canada': 'Canadá',
+    'Cape Verde': 'Cabo Verde', 'Colombia': 'Colômbia', 'Congo DR': 'RD Congo', 'Croatia': 'Croácia',
+    'Curaçao': 'Curaçao', 'Czechia': 'Rep. Tcheca', 'Ecuador': 'Equador', 'Egypt': 'Egito',
+    'England': 'Inglaterra', 'France': 'França', 'Germany': 'Alemanha', 'Ghana': 'Gana',
+    'Haiti': 'Haiti', 'Iran': 'Irã', 'Iraq': 'Iraque', 'Ivory Coast': 'Costa do Marfim',
+    'Japan': 'Japão', 'Jordan': 'Jordânia', 'Mexico': 'México', 'Morocco': 'Marrocos',
+    'Netherlands': 'Holanda', 'New Zealand': 'Nova Zelândia', 'Norway': 'Noruega', 'Panama': 'Panamá',
+    'Paraguay': 'Paraguai', 'Portugal': 'Portugal', 'Qatar': 'Catar', 'Saudi Arabia': 'Arábia Saudita',
+    'Scotland': 'Escócia', 'Senegal': 'Senegal', 'South Africa': 'África do Sul', 'South Korea': 'Coreia do Sul',
+    'Spain': 'Espanha', 'Sweden': 'Suécia', 'Switzerland': 'Suíça', 'Tunisia': 'Tunísia',
+    'Türkiye': 'Turquia', 'United States': 'Estados Unidos', 'Uruguay': 'Uruguai', 'Uzbekistan': 'Uzbequistão'
+};
+
+const BOLAO_FASES_PT = {
+    'group-stage': 'Fase de Grupos', 'round-of-32': '16 avos de final', 'round-of-16': 'Oitavas de final',
+    'quarterfinals': 'Quartas de final', 'semifinals': 'Semifinal', 'third-place': 'Disputa de 3º lugar', 'final': 'Final'
+};
+
+// Traduz placeholders do mata-mata ("Group A Winner", "Quarterfinal 1 Winner"...)
+function traduzirNomeBolao(nome) {
+    if (!nome) return '?';
+    if (BOLAO_NOMES_PT[nome]) return BOLAO_NOMES_PT[nome];
+    let m;
+    if ((m = nome.match(/^Group ([A-L]) Winner$/)))       return `1º do Grupo ${m[1]}`;
+    if ((m = nome.match(/^Group ([A-L]) 2nd Place$/)))    return `2º do Grupo ${m[1]}`;
+    if ((m = nome.match(/^Third Place Group (.+)$/)))     return `3º Grupos ${m[1]}`;
+    if ((m = nome.match(/^Round of 32 (\d+) Winner$/)))   return `Venc. 16 avos ${m[1]}`;
+    if ((m = nome.match(/^Round of 16 (\d+) Winner$/)))   return `Venc. Oitavas ${m[1]}`;
+    if ((m = nome.match(/^Quarterfinal (\d+) Winner$/)))  return `Venc. Quartas ${m[1]}`;
+    if ((m = nome.match(/^Semifinal (\d+) Winner$/)))     return `Venc. Semi ${m[1]}`;
+    if ((m = nome.match(/^Semifinal (\d+) Loser$/)))      return `Perd. Semi ${m[1]}`;
+    return nome;
+}
+
+function timeIndefinidoBolao(nome) {
+    return !nome || /Winner|Loser|2nd Place|Third Place/i.test(nome);
+}
+
+let bolaoCache = { jogos: [], atualizadoEm: 0 };
+
+async function buscarJogosCopa() {
+    if (bolaoCache.jogos.length && (Date.now() - bolaoCache.atualizadoEm) < 60 * 1000) {
+        return bolaoCache.jogos;
+    }
+    const resp = await fetch(BOLAO_ESPN_URL);
+    if (!resp.ok) throw new Error(`ESPN respondeu ${resp.status}`);
+    const data = await resp.json();
+
+    const jogos = (data.events || []).map(ev => {
+        const comp = (ev.competitions || [])[0] || {};
+        const competidores = comp.competitors || [];
+        const casa = competidores.find(c => c.homeAway === 'home') || competidores[0] || {};
+        const fora = competidores.find(c => c.homeAway === 'away') || competidores[1] || {};
+        const statusTipo = (comp.status && comp.status.type) || {};
+        const situacao = statusTipo.state || 'pre'; // pre | in | post
+
+        const montarTime = (c) => {
+            const nomeOriginal = c.team ? (c.team.name || c.team.displayName) : '';
+            return {
+                nome: traduzirNomeBolao(nomeOriginal),
+                sigla: (c.team && c.team.abbreviation) || '',
+                bandeira: (c.team && c.team.logo) || '',
+                definido: !timeIndefinidoBolao(nomeOriginal),
+                placar: (situacao === 'pre' || c.score === undefined || c.score === null) ? null : parseInt(c.score, 10)
+            };
+        };
+
+        return {
+            id: String(ev.id),
+            data: ev.date,
+            fase: BOLAO_FASES_PT[(ev.season && ev.season.slug) || ''] || (ev.season && ev.season.slug) || '',
+            estadio: (comp.venue && comp.venue.fullName) || '',
+            cidade: (comp.venue && comp.venue.address && comp.venue.address.city) || '',
+            estado: {
+                situacao,
+                encerrado: !!statusTipo.completed,
+                detalhe: statusTipo.shortDetail || '',
+                relogio: (comp.status && comp.status.displayClock) || ''
+            },
+            casa: montarTime(casa),
+            fora: montarTime(fora)
+        };
+    }).sort((a, b) => new Date(a.data) - new Date(b.data));
+
+    if (jogos.length > 0) {
+        bolaoCache = { jogos, atualizadoEm: Date.now() };
+    }
+    return bolaoCache.jogos;
+}
+
+async function garantirTabelaBolao() {
+    await pool.query(`CREATE TABLE IF NOT EXISTS bolao_palpites (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        email VARCHAR(150) NOT NULL,
+        nome VARCHAR(150),
+        foto TEXT,
+        match_id VARCHAR(30) NOT NULL,
+        placar_casa INT NOT NULL,
+        placar_fora INT NOT NULL,
+        atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_bolao (email, match_id)
+    )`);
+}
+setTimeout(() => garantirTabelaBolao().then(() => console.log('[Bolão] Tabela bolao_palpites OK.')).catch(e => console.error('[Bolão] Erro ao criar tabela:', e.message)), 5000);
+
+function calcularPontosBolao(palpite, jogo) {
+    if (jogo.casa.placar === null || jogo.fora.placar === null) return 0;
+    const pc = palpite.placar_casa, pf = palpite.placar_fora;
+    const rc = jogo.casa.placar, rf = jogo.fora.placar;
+    if (pc === rc && pf === rf) return 10;
+    const empateReal = (rc === rf), empatePalpite = (pc === pf);
+    // Empate só pontua para quem palpitou empate (e palpite de empate só pontua se o jogo empatar)
+    if (empateReal || empatePalpite) return (empateReal && empatePalpite) ? 3 : 0;
+    if ((pc > pf) !== (rc > rf)) return 0;
+    return (pc === rc || pf === rf) ? 5 : 3;
+}
+
+function ehJogoBrasilBolao(jogo) {
+    return !!jogo && (jogo.casa.sigla === 'BRA' || jogo.fora.sigla === 'BRA' || jogo.casa.nome === 'Brasil' || jogo.fora.nome === 'Brasil');
+}
+
+// Página pública do bolão p/ convidados — servida pela própria API para funcionar
+// de fora da rede via porta externa (http://ranking.ecooncologia.com.br:3001/bolao)
+app.get('/bolao', (req, res) => {
+    const arquivo = path.join(__dirname, 'ONCO-SMART-FRONT', 'bolao-convidado.html');
+    if (!fs.existsSync(arquivo)) return res.status(404).send('Página do bolão indisponível neste ambiente.');
+    res.sendFile(arquivo);
+});
+
+// Lista de jogos com placares (cache 60s)
+app.get('/bolao/jogos', async (req, res) => {
+    try {
+        const jogos = await buscarJogosCopa();
+        res.json({ jogos, atualizado_em: bolaoCache.atualizadoEm });
+    } catch (e) {
+        console.error('❌ [Bolão] Erro ao buscar jogos:', e.message);
+        res.status(502).json({ error: 'Falha ao buscar placares: ' + e.message });
+    }
+});
+
+// Palpites do usuário logado
+app.get('/bolao/palpites', async (req, res) => {
+    const email = req.query.email;
+    if (!email) return res.status(400).json({ error: 'Parâmetro email é obrigatório.' });
+    try {
+        const [rows] = await pool.query('SELECT match_id, placar_casa, placar_fora FROM bolao_palpites WHERE email = ?', [email]);
+        const out = {};
+        rows.forEach(r => { out[r.match_id] = { casa: r.placar_casa, fora: r.placar_fora }; });
+        res.json(out);
+    } catch (e) {
+        if (e.code === 'ER_NO_SUCH_TABLE') return res.json({});
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Palpites de todos para um jogo (visíveis em tempo real, conforme são inseridos)
+app.get('/bolao/palpites-jogo/:matchId', async (req, res) => {
+    try {
+        const jogos = await buscarJogosCopa();
+        const jogo = jogos.find(j => j.id === String(req.params.matchId));
+        if (!jogo) return res.status(404).json({ error: 'Jogo não encontrado.' });
+        const [rows] = await pool.query('SELECT nome, email, foto, placar_casa, placar_fora FROM bolao_palpites WHERE match_id = ?', [req.params.matchId]);
+        res.json(rows.map(r => ({
+            nome: r.nome, email: r.email, foto: r.foto,
+            casa: r.placar_casa, fora: r.placar_fora,
+            pontos: jogo.estado.situacao === 'pre' ? null : calcularPontosBolao(r, jogo)
+        })).sort((a, b) => (b.pontos || 0) - (a.pontos || 0)));
+    } catch (e) {
+        if (e.code === 'ER_NO_SUCH_TABLE') return res.json([]);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Palpites de todos os jogos do dia (feed em tempo real; o "dia" segue o fuso de São Paulo)
+app.get('/bolao/palpites-dia', async (req, res) => {
+    try {
+        const jogos = await buscarJogosCopa();
+        const diaSP = (iso) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+        const hojeSP = diaSP(new Date().toISOString());
+        const jogosHoje = jogos.filter(j => diaSP(j.data) === hojeSP);
+        if (jogosHoje.length === 0) return res.json([]);
+
+        const ids = jogosHoje.map(j => j.id);
+        const [rows] = await pool.query(
+            'SELECT nome, email, foto, match_id, placar_casa, placar_fora, atualizado_em FROM bolao_palpites WHERE match_id IN (?) ORDER BY atualizado_em ASC',
+            [ids]
+        );
+
+        res.json(jogosHoje.map(j => ({
+            matchId: j.id,
+            palpites: rows.filter(r => r.match_id === j.id).map(r => ({
+                nome: r.nome, email: r.email, foto: r.foto,
+                casa: r.placar_casa, fora: r.placar_fora,
+                pontos: j.estado.situacao === 'pre' ? null : calcularPontosBolao(r, j)
+            }))
+        })));
+    } catch (e) {
+        if (e.code === 'ER_NO_SUCH_TABLE') return res.json([]);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Salvar/atualizar palpite (bloqueado após o início do jogo)
+app.post('/bolao/palpite', async (req, res) => {
+    const { email, nome, foto, matchId, placarCasa, placarFora } = req.body || {};
+    const pc = parseInt(placarCasa, 10), pf = parseInt(placarFora, 10);
+    if (!email || !matchId || isNaN(pc) || isNaN(pf) || pc < 0 || pf < 0 || pc > 99 || pf > 99) {
+        return res.status(400).json({ error: 'Dados inválidos: informe email, jogo e placares entre 0 e 99.' });
+    }
+    try {
+        const jogos = await buscarJogosCopa();
+        const jogo = jogos.find(j => j.id === String(matchId));
+        if (!jogo) return res.status(404).json({ error: 'Jogo não encontrado.' });
+        if (!jogo.casa.definido || !jogo.fora.definido) {
+            return res.status(403).json({ error: 'Os times deste jogo ainda não foram definidos.' });
+        }
+        if (jogo.estado.situacao !== 'pre' || new Date(jogo.data) <= new Date()) {
+            return res.status(403).json({ error: 'Palpites encerrados: este jogo já começou!' });
+        }
+        await garantirTabelaBolao();
+        await pool.query(
+            `INSERT INTO bolao_palpites (email, nome, foto, match_id, placar_casa, placar_fora) VALUES (?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE nome = VALUES(nome), foto = VALUES(foto), placar_casa = VALUES(placar_casa), placar_fora = VALUES(placar_fora)`,
+            [email, nome || email, foto || null, String(matchId), pc, pf]
+        );
+        res.json({ success: true });
+    } catch (e) {
+        console.error('❌ [Bolão] Erro ao salvar palpite:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Ranking em tempo real (jogos ao vivo já pontuam parcialmente)
+app.get('/bolao/ranking', async (req, res) => {
+    try {
+        const jogos = await buscarJogosCopa();
+        const jogosPorId = {};
+        jogos.forEach(j => { jogosPorId[j.id] = j; });
+
+        const [rows] = await pool.query('SELECT email, nome, foto, match_id, placar_casa, placar_fora FROM bolao_palpites');
+        const porUsuario = {};
+        rows.forEach(r => {
+            if (!porUsuario[r.email]) {
+                porUsuario[r.email] = {
+                    email: r.email, nome: r.nome || r.email, foto: r.foto,
+                    pontos: 0, exatos: 0, acertos: 0, palpites: 0,
+                    pontosBrasil: 0, exatosBrasil: 0, acertosBrasil: 0, palpitesBrasil: 0
+                };
+            }
+            const u = porUsuario[r.email];
+            const jogo = jogosPorId[r.match_id];
+            const doBrasil = ehJogoBrasilBolao(jogo);
+            u.palpites++;
+            if (doBrasil) u.palpitesBrasil++;
+            if (r.nome) u.nome = r.nome;
+            if (r.foto) u.foto = r.foto;
+            if (!jogo || jogo.estado.situacao === 'pre') return;
+            const pts = calcularPontosBolao(r, jogo);
+            u.pontos += pts;
+            if (pts === 10) u.exatos++;
+            if (pts > 0) u.acertos++;
+            if (doBrasil) {
+                u.pontosBrasil += pts;
+                if (pts === 10) u.exatosBrasil++;
+                if (pts > 0) u.acertosBrasil++;
+            }
+        });
+
+        const lista = Object.values(porUsuario).sort((a, b) =>
+            b.pontos - a.pontos || b.exatos - a.exatos || b.acertos - a.acertos || a.nome.localeCompare(b.nome)
+        );
+        res.json(lista);
+    } catch (e) {
+        if (e.code === 'ER_NO_SUCH_TABLE') return res.json([]);
+        console.error('❌ [Bolão] Erro no ranking:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============================================================================
+// --- ANIVERSARIANTES DE PACIENTES (TASY) ---
+// ============================================================================
+app.get('/pacientes_aniversariantes', async (req, res) => {
+    let connection;
+    try {
+        connection = await oracledb.getConnection(dbConfigOracle);
+        const today = new Date();
+        const currM = today.getMonth() + 1;
+        const nextM = currM === 12 ? 1 : currM + 1;
+
+        const result = await connection.execute(
+            `SELECT NM_PACIENTE, DT_NASCIMENTO
+             FROM TASY.pacientes_aniverssariantes
+             WHERE EXTRACT(MONTH FROM DT_NASCIMENTO) IN (:currM, :nextM)
+             ORDER BY EXTRACT(MONTH FROM DT_NASCIMENTO), EXTRACT(DAY FROM DT_NASCIMENTO)`,
+            { currM, nextM }
+        );
+
+        console.log(`✅ [Oracle] pacientes_aniverssariantes: ${result.rows.length} registros.`);
+        res.json(result.rows);
+    } catch (err) {
+        console.error('❌ [Oracle] Erro em /pacientes_aniversariantes:', err.message);
+        res.status(500).json({ error: err.message });
+    } finally {
+        if (connection) try { await connection.close(); } catch (e) {}
+    }
+});
+
+// ============================================================================
 // --- ROTA DE LEITURA (GET) ---
 // ============================================================================
 app.get('/:tabela', async (req, res, next) => {
@@ -878,6 +1199,9 @@ app.get('/:tabela', async (req, res, next) => {
             else if (tabela.includes('vita_batel')) { dbTable = 'plantoes_vita_batel'; sufixo = '-vita_batel'; }
             else if (tabela.includes('vita_br')) { dbTable = 'plantoes_vita_br'; sufixo = '-vita_br'; }
             else if (tabela.includes('cirurgioes')) { dbTable = 'plantoes_cirurgioes'; sufixo = '-cirurgioes'; }
+            else if (tabela.includes('paliativo')) { dbTable = 'plantoes_paliativo'; sufixo = '-paliativo'; }
+            else if (tabela.includes('psicologo')) { dbTable = 'plantoes_psicologo'; sufixo = '-psicologo'; }
+            else if (tabela.includes('nutricao')) { dbTable = 'plantoes_nutricao'; sufixo = '-nutricao'; }
 
             const [rows] = await pool.query(`SELECT medico_id, DATE_FORMAT(data_plantao, '%Y-%m-%d') as data_str, tipo FROM ${dbTable}`);
             const resultado = {};
@@ -1014,6 +1338,9 @@ async function handleSave(req, res, next) {
             else if (tabela.includes('vita_batel') || finalId.includes('vita_batel')) dbTable = 'plantoes_vita_batel';
             else if (tabela.includes('vita_br') || finalId.includes('vita_br')) dbTable = 'plantoes_vita_br';
             else if (tabela.includes('cirurgioes') || finalId.includes('cirurgioes')) dbTable = 'plantoes_cirurgioes';
+            else if (tabela.includes('paliativo') || finalId.includes('paliativo')) dbTable = 'plantoes_paliativo';
+            else if (tabela.includes('psicologo') || finalId.includes('psicologo')) dbTable = 'plantoes_psicologo';
+            else if (tabela.includes('nutricao') || finalId.includes('nutricao')) dbTable = 'plantoes_nutricao';
 
             const partes = finalId.split('-');
             if(!partes[0] || !partes[1]) return res.status(400).json({error: "ID inválido."});
