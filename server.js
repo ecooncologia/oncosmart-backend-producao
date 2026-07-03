@@ -192,6 +192,53 @@ app.get('/custos_oracle', async (req, res) => {
     }
 });
 
+// ============================================================================
+// 💊 COMPARATIVO DE CONVÊNIOS — lista de medicamentos com custo mais recente
+// Lê direto da view TASY.TABELA_CUSTOS. Retorna, por material, a compra de
+// data mais recente (<= hoje) com: custo do frasco, mg por frasco (QT_APRESENT)
+// e custo por mg (VL_MG). Usado pela tela "Comparação de Convênios".
+// ============================================================================
+app.get('/comparativo/view-custos', async (req, res) => {
+    let connection;
+    try {
+        connection = await oracledb.getConnection(dbConfigOracle);
+        const q = `
+            SELECT CD_TUSS, CD_MATERIAL, DS_MATERIAL,
+                   CUSTO           AS CUSTO_FRASCO,
+                   VL_MG           AS CUSTO_MG,
+                   QT_APRESENT     AS QT_MG,
+                   VL_NEGOCIADO    AS VL_NEGOCIADO,
+                   TO_CHAR(DT_PRECO,'YYYY-MM-DD') AS DT_PRECO
+              FROM (
+                    SELECT t.*,
+                           ROW_NUMBER() OVER (PARTITION BY CD_MATERIAL
+                                              ORDER BY DT_PRECO DESC) AS RN
+                      FROM TASY.TABELA_CUSTOS t
+                     WHERE DT_PRECO <= SYSDATE
+                   )
+             WHERE RN = 1
+             ORDER BY DS_MATERIAL`;
+        const result = await connection.execute(q);
+        const rows = (result.rows || []).map(r => ({
+            cd_tuss:       r.CD_TUSS != null ? String(r.CD_TUSS) : null,
+            cd_material:   r.CD_MATERIAL != null ? String(r.CD_MATERIAL) : null,
+            ds_material:   r.DS_MATERIAL || '',
+            custo_frasco:  parseFloat(r.CUSTO_FRASCO || 0),
+            custo_mg:      parseFloat(r.CUSTO_MG || 0),
+            qt_mg:         parseFloat(r.QT_MG || 0),
+            vl_negociado:  parseFloat(r.VL_NEGOCIADO || 0),
+            dt_preco:      r.DT_PRECO || null,
+        }));
+        console.log(`💊 [Comparativo] view-custos: ${rows.length} materiais retornados.`);
+        res.json(rows);
+    } catch (err) {
+        console.error("❌ [Comparativo] Erro em /comparativo/view-custos:", err.message);
+        res.status(500).json({ error: "Erro ao buscar custos da view: " + err.message });
+    } finally {
+        if (connection) { try { await connection.close(); } catch (e) {} }
+    }
+});
+
 app.get('/view_vita', async (req, res) => {
     let connection;
     try {
