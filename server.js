@@ -1489,7 +1489,8 @@ async function handleSave(req, res, next) {
             if(!partes[0] || !partes[1]) return res.status(400).json({error: "ID inválido."});
             const anoMes = `${partes[0]}-${partes[1]}`;
 
-            const insertRows = [];
+            // Deduplica por (medico, data) — payloads podem trazer o mesmo dia duas vezes ('1' e '01')
+            const mapaRows = new Map();
 
             for (const [medicoId, dias] of Object.entries(dados)) {
                 if (medicoId === 'id_firebase' || medicoId === 'id' || medicoId === 'obs') continue;
@@ -1497,15 +1498,18 @@ async function handleSave(req, res, next) {
                 for (const [dia, tipo] of Object.entries(dias)) {
                     if (isNaN(dia) || dia === null || dia === '') continue;
                     if (tipo && ['M', 'T', 'M/T', 'S'].includes(tipo)) {
-                        insertRows.push([medicoId, `${anoMes}-${String(dia).padStart(2,'0')}`, tipo]);
+                        const dataPlantao = `${anoMes}-${String(parseInt(dia)).padStart(2,'0')}`;
+                        mapaRows.set(`${medicoId}|${dataPlantao}`, [medicoId, dataPlantao, tipo]);
                     }
                 }
             }
+            const insertRows = [...mapaRows.values()];
 
-            // Deleta o mês inteiro da tabela antes de reinserir — evita ER_DUP_ENTRY
+            // Deleta o mês inteiro e reinsere de forma idempotente — o ON DUPLICATE protege
+            // contra corrida entre dois saves simultâneos (DELETE de um, INSERT do outro)
             await pool.query(`DELETE FROM ${dbTable} WHERE DATE_FORMAT(data_plantao, '%Y-%m') = ?`, [anoMes]);
             if (insertRows.length > 0) {
-                await pool.query(`INSERT INTO ${dbTable} (medico_id, data_plantao, tipo) VALUES ?`, [insertRows]);
+                await pool.query(`INSERT INTO ${dbTable} (medico_id, data_plantao, tipo) VALUES ? ON DUPLICATE KEY UPDATE tipo = VALUES(tipo)`, [insertRows]);
             }
             return res.json({ success: true });
         }
@@ -1827,7 +1831,31 @@ setTimeout(() => {
 // ============================================================================
 // 🔄 ROTINA DIÁRIA: RESUMO DE PRESCRIÇÕES (TASY)
 // ============================================================================
+// Guarda persistente: só envia 1x por dia, mesmo com restarts do servidor
+async function resumoPrescricoesJaEnviadoHoje() {
+    try {
+        const [rows] = await pool.query("SELECT dados_extras FROM system_configs WHERE id_firebase = 'resumo_prescricoes_ultimo_envio'");
+        if (rows.length > 0) {
+            const cfg = typeof rows[0].dados_extras === 'string' ? JSON.parse(rows[0].dados_extras) : (rows[0].dados_extras || {});
+            const hojeSP = new Date(new Date().toLocaleString("en-US", {timeZone: "America/Sao_Paulo"})).toISOString().split('T')[0];
+            return cfg.data === hojeSP;
+        }
+    } catch(e) { console.warn("[Resumo Prescrições] Falha ao ler guarda de envio:", e.message); }
+    return false;
+}
+
+async function marcarResumoPrescricoesEnviado() {
+    try {
+        const hojeSP = new Date(new Date().toLocaleString("en-US", {timeZone: "America/Sao_Paulo"})).toISOString().split('T')[0];
+        await pool.query("INSERT INTO system_configs (id_firebase, dados_extras) VALUES ('resumo_prescricoes_ultimo_envio', ?) ON DUPLICATE KEY UPDATE dados_extras = VALUES(dados_extras)", [JSON.stringify({ data: hojeSP })]);
+    } catch(e) { console.warn("[Resumo Prescrições] Falha ao gravar guarda de envio:", e.message); }
+}
+
 async function enviarResumoPrescricoes() {
+    if (await resumoPrescricoesJaEnviadoHoje()) {
+        console.log("[Resumo Prescrições] Já enviado hoje — ignorando (guarda persistente).");
+        return;
+    }
     let connection;
     try {
         connection = await oracledb.getConnection(dbConfigOracle);
@@ -1908,6 +1936,7 @@ async function enviarResumoPrescricoes() {
         } else {
             console.log(`ℹ️ [Resumo Prescrições] Nenhuma prescrição encontrada para ontem.`);
         }
+        await marcarResumoPrescricoesEnviado();
     } catch (err) {
         console.error("❌ [Resumo Prescrições] Erro ao buscar prescrições:", err.message);
     } finally {
@@ -1917,21 +1946,14 @@ async function enviarResumoPrescricoes() {
     }
 }
 
-setTimeout(() => {
-    console.log("🚀 [Resumo Prescrições] Rodando disparo inicial...");
-    enviarResumoPrescricoes();
-}, 15000);
-
-let dataUltimoEnvioPrescricoes = null;
+// Sem disparo no boot: o envio acontece só às 06h (a guarda persistente cobre
+// o caso de o servidor reiniciar no meio da manhã sem ter enviado ainda)
 setInterval(() => {
     const agora = new Date();
     const horaSP = new Date(agora.toLocaleString("en-US", {timeZone: "America/Sao_Paulo"}));
-    const dataAtualString = horaSP.toISOString().split('T')[0];
 
-    if (horaSP.getHours() === 6 && dataUltimoEnvioPrescricoes !== dataAtualString) {
-        console.log("⏰ [Resumo Prescrições] Relógio marcou 06h! Iniciando extração do dia anterior...");
+    if (horaSP.getHours() >= 6 && horaSP.getHours() < 12) {
         enviarResumoPrescricoes();
-        dataUltimoEnvioPrescricoes = dataAtualString; 
     }
 }, 60000); 
 
