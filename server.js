@@ -913,6 +913,126 @@ app.post('/caixinha/cobrar', async (req, res) => {
 });
 
 // ============================================================================
+// 📦 MÓDULO COMPRAS / ESTOQUE E LOGÍSTICA
+// E-mail para o time de compras (novo pedido) e para o solicitante (mudança de status).
+// Destinatário do time configurável em system_configs (id_firebase: 'compras_config').
+// ============================================================================
+async function emailTimeCompras() {
+    try {
+        const [rows] = await pool.query(`SELECT dados_extras FROM system_configs WHERE id_firebase = 'compras_config' LIMIT 1`);
+        if (rows.length > 0) {
+            const cfg = typeof rows[0].dados_extras === 'string' ? JSON.parse(rows[0].dados_extras) : (rows[0].dados_extras || {});
+            if (cfg.email_notificacao && String(cfg.email_notificacao).includes('@')) return String(cfg.email_notificacao).trim();
+        }
+    } catch (e) { console.warn('⚠️ [COMPRAS] Falha ao ler compras_config:', e.message); }
+    return null;
+}
+
+function htmlItensPedido(itens) {
+    if (!Array.isArray(itens) || itens.length === 0) return '<p style="color:#94a3b8;">Sem itens.</p>';
+    const linhas = itens.map(i => `
+        <tr>
+            <td style="padding:6px 10px; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${i.nome || '-'}</td>
+            <td style="padding:6px 10px; border-bottom:1px solid #f1f5f9; color:#64748b;">${i.categoria || '-'}</td>
+            <td style="padding:6px 10px; border-bottom:1px solid #f1f5f9; color:#0f172a; text-align:right; font-weight:700;">${i.qtd || 0} ${i.unidade || ''}</td>
+        </tr>`).join('');
+    return `
+        <table style="width:100%; border-collapse:collapse; font-size:13px; margin:10px 0;">
+            <thead><tr>
+                <th style="padding:6px 10px; text-align:left; background:#f8fafc; color:#64748b; font-size:11px; text-transform:uppercase;">Material</th>
+                <th style="padding:6px 10px; text-align:left; background:#f8fafc; color:#64748b; font-size:11px; text-transform:uppercase;">Categoria</th>
+                <th style="padding:6px 10px; text-align:right; background:#f8fafc; color:#64748b; font-size:11px; text-transform:uppercase;">Qtd</th>
+            </tr></thead>
+            <tbody>${linhas}</tbody>
+        </table>`;
+}
+
+app.post('/compras/notificar', async (req, res) => {
+    try {
+        const { tipo, pedido } = req.body;
+        if (!tipo || !pedido) return res.status(400).json({ erro: 'Campos tipo e pedido são obrigatórios.' });
+
+        const agora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+        const rodape = `<div style="background:#f8fafc; padding:14px 24px; font-size:11px; color:#94a3b8; border-top:1px solid #e2e8f0;">Enviado automaticamente pelo Onco Smart · ${agora}</div>`;
+
+        if (tipo === 'novo_pedido') {
+            const destino = await emailTimeCompras();
+            if (!destino) {
+                console.warn('⚠️ [COMPRAS] Novo pedido sem e-mail do time configurado — notificação ignorada.');
+                return res.json({ sucesso: true, aviso: 'E-mail do time de compras não configurado.' });
+            }
+
+            await transporter.sendMail({
+                from: `"Onco Smart — Compras" <${process.env.EMAIL_USER}>`,
+                to: destino,
+                subject: `📦 Novo Pedido de Materiais — ${pedido.solicitante_nome || 'Colaborador'} (${pedido.setor || 'Setor não informado'})`,
+                html: `
+                <div style="font-family:Arial,sans-serif; max-width:600px; margin:0 auto; border:1px solid #e2e8f0; border-radius:12px; overflow:hidden;">
+                    <div style="background:#00855B; padding:20px 24px;">
+                        <div style="color:#fff; font-size:18px; font-weight:800;">📦 Novo Pedido de Materiais</div>
+                        <div style="color:#a7f3d0; font-size:13px;">ECO Oncologia — Estoque e Logística</div>
+                    </div>
+                    <div style="padding:24px;">
+                        <table style="width:100%; border-collapse:collapse; font-size:14px; margin-bottom:8px;">
+                            <tr><td style="padding:6px 0; color:#64748b; width:120px; font-weight:700;">Solicitante:</td><td style="padding:6px 0; font-weight:800; color:#0f172a;">${pedido.solicitante_nome || '-'}</td></tr>
+                            <tr><td style="padding:6px 0; color:#64748b; font-weight:700;">Setor:</td><td style="padding:6px 0; color:#0f172a;">${pedido.setor || '-'}</td></tr>
+                            <tr><td style="padding:6px 0; color:#64748b; font-weight:700;">Data:</td><td style="padding:6px 0; color:#0f172a;">${agora}</td></tr>
+                        </table>
+                        ${htmlItensPedido(pedido.itens)}
+                        ${pedido.observacao ? `<p style="font-size:13px; color:#475569; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px;"><b>Observação:</b> ${pedido.observacao}</p>` : ''}
+                        <p style="margin-top:16px; color:#00855B; font-size:13px; font-weight:600;">Acesse a Gestão de Compras no Onco Smart para aprovar ou recusar.</p>
+                    </div>
+                    ${rodape}
+                </div>`
+            });
+            console.log(`📧 [COMPRAS] Novo pedido notificado para ${destino} — ${pedido.solicitante_nome}`);
+            return res.json({ sucesso: true });
+        }
+
+        if (tipo === 'status') {
+            const destino = pedido.solicitante_email;
+            if (!destino || !String(destino).includes('@')) {
+                return res.json({ sucesso: true, aviso: 'Solicitante sem e-mail — notificação ignorada.' });
+            }
+
+            const visualStatus = {
+                aprovado:  { cor: '#00855B', corSoft: '#a7f3d0', emoji: '✅', titulo: 'Pedido Aprovado' },
+                em_compra: { cor: '#0284c7', corSoft: '#bae6fd', emoji: '🛒', titulo: 'Pedido em Compra' },
+                entregue:  { cor: '#047857', corSoft: '#6ee7b7', emoji: '📬', titulo: 'Pedido Entregue' },
+                recusado:  { cor: '#dc2626', corSoft: '#fecaca', emoji: '❌', titulo: 'Pedido Recusado' }
+            };
+            const v = visualStatus[pedido.status] || { cor: '#64748b', corSoft: '#e2e8f0', emoji: '🔔', titulo: 'Atualização do Pedido' };
+
+            await transporter.sendMail({
+                from: `"Onco Smart — Compras" <${process.env.EMAIL_USER}>`,
+                to: destino,
+                subject: `${v.emoji} ${v.titulo} — Materiais (${pedido.setor || ''})`,
+                html: `
+                <div style="font-family:Arial,sans-serif; max-width:600px; margin:0 auto; border:1px solid #e2e8f0; border-radius:12px; overflow:hidden;">
+                    <div style="background:${v.cor}; padding:20px 24px;">
+                        <div style="color:#fff; font-size:18px; font-weight:800;">${v.emoji} ${v.titulo}</div>
+                        <div style="color:${v.corSoft}; font-size:13px;">ECO Oncologia — Estoque e Logística</div>
+                    </div>
+                    <div style="padding:24px;">
+                        <p style="margin-top:0; color:#0f172a;">Olá <strong>${pedido.solicitante_nome || ''}</strong>, seu pedido de materiais foi atualizado.</p>
+                        ${pedido.status === 'recusado' && pedido.motivo_recusa ? `<p style="font-size:13px; color:#b91c1c; background:#fee2e2; border:1px solid #fecaca; border-radius:8px; padding:10px;"><b>Motivo da recusa:</b> ${pedido.motivo_recusa}</p>` : ''}
+                        ${htmlItensPedido(pedido.itens)}
+                    </div>
+                    ${rodape}
+                </div>`
+            });
+            console.log(`📧 [COMPRAS] Status "${pedido.status}" notificado para ${destino}`);
+            return res.json({ sucesso: true });
+        }
+
+        return res.status(400).json({ erro: `Tipo desconhecido: ${tipo}` });
+    } catch (error) {
+        console.error('❌ [COMPRAS] Erro na rota /compras/notificar:', error.message);
+        return res.status(500).json({ erro: 'Erro interno ao enviar notificação.' });
+    }
+});
+
+// ============================================================================
 // 🏆 MÓDULO BOLÃO DA COPA 2026
 // Placares via API pública da ESPN (sem chave), com cache de 60s.
 // Pontuação: placar exato = 10 | vencedor/empate + gols de um time = 5 | vencedor/empate = 3
