@@ -996,6 +996,7 @@ app.post('/compras/notificar', async (req, res) => {
             }
 
             const visualStatus = {
+                comprado:  { cor: '#166534', corSoft: '#bbf7d0', emoji: '🛒', titulo: 'Pedido Comprado' },
                 aprovado:  { cor: '#00855B', corSoft: '#a7f3d0', emoji: '✅', titulo: 'Pedido Aprovado' },
                 em_compra: { cor: '#0284c7', corSoft: '#bae6fd', emoji: '🛒', titulo: 'Pedido em Compra' },
                 entregue:  { cor: '#047857', corSoft: '#6ee7b7', emoji: '📬', titulo: 'Pedido Entregue' },
