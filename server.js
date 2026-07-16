@@ -239,6 +239,75 @@ app.get('/comparativo/view-custos', async (req, res) => {
     }
 });
 
+// ============================================================================
+// 📦 ESTOQUE TASY — soma QT_ESTOQUE_DISP por DS_MATERIAL (view acompanhamento_estoque)
+// Referência por medicamento (inicializada com a soma atual, editável) em system_configs.
+// Status BAIXO quando disponível <= ceil(referencia/2) - 1. Cache de 3 min (Oracle é pesado).
+// ============================================================================
+let estoqueTasyCache = { data: null, ts: 0 };
+const ESTOQUE_TASY_TTL = 3 * 60 * 1000;
+
+async function lerRefsEstoqueTasy() {
+    try {
+        const [rows] = await pool.query("SELECT dados_extras FROM system_configs WHERE id_firebase = 'estoque_tasy_refs'");
+        if (rows.length) { const c = typeof rows[0].dados_extras === 'string' ? JSON.parse(rows[0].dados_extras) : (rows[0].dados_extras || {}); return c.refs || {}; }
+    } catch (e) { console.warn('[Estoque Tasy] falha ao ler refs:', e.message); }
+    return {};
+}
+async function salvarRefsEstoqueTasy(refs) {
+    await pool.query("INSERT INTO system_configs (id_firebase, dados_extras) VALUES ('estoque_tasy_refs', ?) ON DUPLICATE KEY UPDATE dados_extras = VALUES(dados_extras)", [JSON.stringify({ refs })]);
+}
+
+async function computarEstoqueTasy(force = false) {
+    if (!force && estoqueTasyCache.data && (Date.now() - estoqueTasyCache.ts) < ESTOQUE_TASY_TTL) return estoqueTasyCache.data;
+    let connection;
+    try {
+        connection = await oracledb.getConnection(dbConfigOracle);
+        const q = `
+            SELECT DS_MATERIAL,
+                   MAX(CD_UNIDADE_MEDIDA_ESTOQUE) AS UN,
+                   SUM(QT_ESTOQUE_DISP)           AS QT
+              FROM TASY.ACOMPANHAMENTO_ESTOQUE
+             WHERE DS_MATERIAL IS NOT NULL
+             GROUP BY DS_MATERIAL`;
+        const result = await connection.execute(q);
+        const refs = await lerRefsEstoqueTasy();
+        let novos = false;
+        const data = (result.rows || []).map(r => {
+            const nome = r.DS_MATERIAL || '';
+            const disp = parseFloat(r.QT || 0);
+            if (refs[nome] === undefined) { refs[nome] = disp; novos = true; }
+            const ref = parseFloat(refs[nome]) || 0;
+            const limite = Math.ceil(ref / 2) - 1;
+            return { ds_material: nome, unidade: r.UN || '', disponivel: disp, referencia: ref, limite, status: disp <= limite ? 'baixo' : 'ok' };
+        }).sort((a, b) => a.disponivel - b.disponivel);
+        if (novos) { try { await salvarRefsEstoqueTasy(refs); } catch (e) { console.warn('[Estoque Tasy] falha ao gravar refs novos:', e.message); } }
+        estoqueTasyCache = { data, ts: Date.now() };
+        console.log(`📦 [Estoque Tasy] ${data.length} medicamentos (${data.filter(x => x.status === 'baixo').length} baixos).`);
+        return data;
+    } finally { if (connection) { try { await connection.close(); } catch (e) {} } }
+}
+
+app.get('/estoque_tasy', async (req, res) => {
+    try { res.json(await computarEstoqueTasy()); }
+    catch (e) { console.error('❌ [Estoque Tasy] erro:', e.message); res.status(500).json({ error: 'Erro ao consultar o estoque no Tasy: ' + e.message }); }
+});
+app.get('/estoque_tasy/alerta', async (req, res) => {
+    try { const d = await computarEstoqueTasy(); res.json({ baixos: d.filter(x => x.status === 'baixo').length, total: d.length }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/estoque_tasy/ref', async (req, res) => {
+    try {
+        const { nome, referencia } = req.body || {};
+        if (!nome) return res.status(400).json({ error: 'nome é obrigatório.' });
+        const refs = await lerRefsEstoqueTasy();
+        refs[nome] = parseFloat(referencia) || 0;
+        await salvarRefsEstoqueTasy(refs);
+        estoqueTasyCache = { data: null, ts: 0 };
+        res.json({ ok: true });
+    } catch (e) { console.error('❌ [Estoque Tasy] erro ao salvar ref:', e.message); res.status(500).json({ error: e.message }); }
+});
+
 app.get('/view_vita', async (req, res) => {
     let connection;
     try {
