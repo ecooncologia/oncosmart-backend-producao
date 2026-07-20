@@ -277,30 +277,33 @@ async function computarEstoqueTasy(force = false) {
     let connection;
     try {
         connection = await oracledb.getConnection(dbConfigOracle);
+        // A view é MENSAL (1 linha por mês/local). Disponível = mês atual (maior DT_MESANO_REFERENCIA).
+        // Consumo dos 3 meses ANTERIORES (sem o mês atual) para calcular o mínimo automático.
         const q = `
-            SELECT DS_MATERIAL,
-                   MAX(CD_UNIDADE_MEDIDA_ESTOQUE) AS UN,
-                   SUM(QT_ESTOQUE_DISP)           AS QT
-              FROM TASY.ACOMPANHAMENTO_ESTOQUE
-             WHERE DS_MATERIAL IS NOT NULL
-             GROUP BY DS_MATERIAL`;
+            WITH mes AS (SELECT MAX(DT_MESANO_REFERENCIA) AS mes_atual FROM TASY.ACOMPANHAMENTO_ESTOQUE)
+            SELECT ae.DS_MATERIAL,
+                   MAX(ae.CD_UNIDADE_MEDIDA_ESTOQUE) AS UN,
+                   SUM(CASE WHEN ae.DT_MESANO_REFERENCIA = m.mes_atual THEN ae.QT_ESTOQUE_DISP ELSE 0 END) AS DISP,
+                   SUM(CASE WHEN ae.DT_MESANO_REFERENCIA <  m.mes_atual
+                             AND ae.DT_MESANO_REFERENCIA >= ADD_MONTHS(m.mes_atual, -3)
+                            THEN ae.QT_CONSUMO ELSE 0 END) AS CONSUMO3
+              FROM TASY.ACOMPANHAMENTO_ESTOQUE ae CROSS JOIN mes m
+             WHERE ae.DS_MATERIAL IS NOT NULL
+             GROUP BY ae.DS_MATERIAL`;
         const result = await connection.execute(q);
         const cfg = await lerCfgEstoqueTasy();
-        let novos = false;
         const data = (result.rows || []).map(r => {
             const nome = r.DS_MATERIAL || '';
-            const disp = parseFloat(r.QT || 0);
-            let m = cfg.meds[nome];
-            if (!m) { m = {}; cfg.meds[nome] = m; }
-            if (m.ref === undefined) { m.ref = disp; novos = true; }
-            const ref = parseFloat(m.ref) || 0;
-            const limiteAuto = Math.ceil(ref / 2) - 1;
+            const disp = parseFloat(r.DISP || 0);
+            const consumo3 = parseFloat(r.CONSUMO3 || 0);
+            const m = cfg.meds[nome] || {};
+            // Mínimo automático = média mensal de consumo dos 3 meses anteriores (piso). Nunca zero (mín. 1).
+            const minimoAuto = Math.max(1, Math.floor(consumo3 / 3));
             const temMinimo = m.minimo !== undefined && m.minimo !== null && m.minimo !== '';
-            const limite = temMinimo ? parseFloat(m.minimo) : limiteAuto;
+            const limite = Math.max(1, temMinimo ? parseFloat(m.minimo) : minimoAuto);
             const oculto = m.oculto === true;
-            return { ds_material: nome, unidade: r.UN || '', disponivel: disp, limite, minimo: temMinimo ? parseFloat(m.minimo) : null, oculto, status: disp <= limite ? 'baixo' : 'ok' };
+            return { ds_material: nome, unidade: r.UN || '', disponivel: disp, consumo3, limite, minimo: temMinimo ? parseFloat(m.minimo) : null, oculto, status: disp <= limite ? 'baixo' : 'ok' };
         }).sort((a, b) => a.disponivel - b.disponivel);
-        if (novos) { try { await salvarCfgEstoqueTasy(cfg); } catch (e) { console.warn('[Estoque Tasy] falha ao gravar cfg novos:', e.message); } }
         estoqueTasyCache = { data, ts: Date.now() };
         console.log(`📦 [Estoque Tasy] ${data.length} medicamentos (${data.filter(x => x.status === 'baixo' && !x.oculto).length} baixos visíveis).`);
         return data;
