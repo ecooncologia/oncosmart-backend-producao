@@ -247,15 +247,29 @@ app.get('/comparativo/view-custos', async (req, res) => {
 let estoqueTasyCache = { data: null, ts: 0 };
 const ESTOQUE_TASY_TTL = 3 * 60 * 1000;
 
-async function lerRefsEstoqueTasy() {
+// Config por medicamento: { meds: { [nome]: { ref, minimo, oculto } } }
+//  - ref: quantidade de referência (capturada automaticamente na 1ª leitura); usada para o limite automático (metade - 1)
+//  - minimo: limite mínimo manual (sobrescreve o automático quando definido)
+//  - oculto: quando true, o medicamento não aparece na lista principal nem no alerta
+async function lerCfgEstoqueTasy() {
     try {
-        const [rows] = await pool.query("SELECT dados_extras FROM system_configs WHERE id_firebase = 'estoque_tasy_refs'");
-        if (rows.length) { const c = typeof rows[0].dados_extras === 'string' ? JSON.parse(rows[0].dados_extras) : (rows[0].dados_extras || {}); return c.refs || {}; }
-    } catch (e) { console.warn('[Estoque Tasy] falha ao ler refs:', e.message); }
-    return {};
+        const [rows] = await pool.query("SELECT dados_extras FROM system_configs WHERE id_firebase = 'estoque_tasy_cfg'");
+        if (rows.length) { const c = typeof rows[0].dados_extras === 'string' ? JSON.parse(rows[0].dados_extras) : (rows[0].dados_extras || {}); if (c && c.meds) return { meds: c.meds }; }
+    } catch (e) { console.warn('[Estoque Tasy] falha ao ler cfg:', e.message); }
+    // Migração: aproveita as referências antigas, se existirem
+    try {
+        const [old] = await pool.query("SELECT dados_extras FROM system_configs WHERE id_firebase = 'estoque_tasy_refs'");
+        if (old.length) {
+            const c = typeof old[0].dados_extras === 'string' ? JSON.parse(old[0].dados_extras) : (old[0].dados_extras || {});
+            const refs = c.refs || {}; const meds = {};
+            Object.keys(refs).forEach(n => { meds[n] = { ref: parseFloat(refs[n]) || 0 }; });
+            return { meds };
+        }
+    } catch (e) {}
+    return { meds: {} };
 }
-async function salvarRefsEstoqueTasy(refs) {
-    await pool.query("INSERT INTO system_configs (id_firebase, dados_extras) VALUES ('estoque_tasy_refs', ?) ON DUPLICATE KEY UPDATE dados_extras = VALUES(dados_extras)", [JSON.stringify({ refs })]);
+async function salvarCfgEstoqueTasy(cfg) {
+    await pool.query("INSERT INTO system_configs (id_firebase, dados_extras) VALUES ('estoque_tasy_cfg', ?) ON DUPLICATE KEY UPDATE dados_extras = VALUES(dados_extras)", [JSON.stringify({ meds: cfg.meds || {} })]);
 }
 
 async function computarEstoqueTasy(force = false) {
@@ -271,19 +285,24 @@ async function computarEstoqueTasy(force = false) {
              WHERE DS_MATERIAL IS NOT NULL
              GROUP BY DS_MATERIAL`;
         const result = await connection.execute(q);
-        const refs = await lerRefsEstoqueTasy();
+        const cfg = await lerCfgEstoqueTasy();
         let novos = false;
         const data = (result.rows || []).map(r => {
             const nome = r.DS_MATERIAL || '';
             const disp = parseFloat(r.QT || 0);
-            if (refs[nome] === undefined) { refs[nome] = disp; novos = true; }
-            const ref = parseFloat(refs[nome]) || 0;
-            const limite = Math.ceil(ref / 2) - 1;
-            return { ds_material: nome, unidade: r.UN || '', disponivel: disp, referencia: ref, limite, status: disp <= limite ? 'baixo' : 'ok' };
+            let m = cfg.meds[nome];
+            if (!m) { m = {}; cfg.meds[nome] = m; }
+            if (m.ref === undefined) { m.ref = disp; novos = true; }
+            const ref = parseFloat(m.ref) || 0;
+            const limiteAuto = Math.ceil(ref / 2) - 1;
+            const temMinimo = m.minimo !== undefined && m.minimo !== null && m.minimo !== '';
+            const limite = temMinimo ? parseFloat(m.minimo) : limiteAuto;
+            const oculto = m.oculto === true;
+            return { ds_material: nome, unidade: r.UN || '', disponivel: disp, limite, minimo: temMinimo ? parseFloat(m.minimo) : null, oculto, status: disp <= limite ? 'baixo' : 'ok' };
         }).sort((a, b) => a.disponivel - b.disponivel);
-        if (novos) { try { await salvarRefsEstoqueTasy(refs); } catch (e) { console.warn('[Estoque Tasy] falha ao gravar refs novos:', e.message); } }
+        if (novos) { try { await salvarCfgEstoqueTasy(cfg); } catch (e) { console.warn('[Estoque Tasy] falha ao gravar cfg novos:', e.message); } }
         estoqueTasyCache = { data, ts: Date.now() };
-        console.log(`📦 [Estoque Tasy] ${data.length} medicamentos (${data.filter(x => x.status === 'baixo').length} baixos).`);
+        console.log(`📦 [Estoque Tasy] ${data.length} medicamentos (${data.filter(x => x.status === 'baixo' && !x.oculto).length} baixos visíveis).`);
         return data;
     } finally { if (connection) { try { await connection.close(); } catch (e) {} } }
 }
@@ -293,19 +312,30 @@ app.get('/estoque_tasy', async (req, res) => {
     catch (e) { console.error('❌ [Estoque Tasy] erro:', e.message); res.status(500).json({ error: 'Erro ao consultar o estoque no Tasy: ' + e.message }); }
 });
 app.get('/estoque_tasy/alerta', async (req, res) => {
-    try { const d = await computarEstoqueTasy(); res.json({ baixos: d.filter(x => x.status === 'baixo').length, total: d.length }); }
+    try { const d = await computarEstoqueTasy(); res.json({ baixos: d.filter(x => x.status === 'baixo' && !x.oculto).length, total: d.filter(x => !x.oculto).length }); }
     catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.post('/estoque_tasy/ref', async (req, res) => {
+// Define mínimo e/ou oculta para um ou vários medicamentos.
+// body: { nomes: [..], minimo?: (number|null p/ limpar), oculto?: bool }
+app.post('/estoque_tasy/config', async (req, res) => {
     try {
-        const { nome, referencia } = req.body || {};
-        if (!nome) return res.status(400).json({ error: 'nome é obrigatório.' });
-        const refs = await lerRefsEstoqueTasy();
-        refs[nome] = parseFloat(referencia) || 0;
-        await salvarRefsEstoqueTasy(refs);
+        const { nomes, minimo, oculto } = req.body || {};
+        const lista = Array.isArray(nomes) ? nomes.filter(Boolean) : (nomes ? [nomes] : []);
+        if (!lista.length) return res.status(400).json({ error: 'nomes é obrigatório.' });
+        const cfg = await lerCfgEstoqueTasy();
+        lista.forEach(nome => {
+            if (!cfg.meds[nome]) cfg.meds[nome] = {};
+            const m = cfg.meds[nome];
+            if (minimo !== undefined) {
+                if (minimo === null || minimo === '') delete m.minimo;
+                else m.minimo = parseFloat(minimo);
+            }
+            if (oculto !== undefined) m.oculto = !!oculto;
+        });
+        await salvarCfgEstoqueTasy(cfg);
         estoqueTasyCache = { data: null, ts: 0 };
-        res.json({ ok: true });
-    } catch (e) { console.error('❌ [Estoque Tasy] erro ao salvar ref:', e.message); res.status(500).json({ error: e.message }); }
+        res.json({ ok: true, afetados: lista.length });
+    } catch (e) { console.error('❌ [Estoque Tasy] erro ao salvar config:', e.message); res.status(500).json({ error: e.message }); }
 });
 
 app.get('/view_vita', async (req, res) => {
