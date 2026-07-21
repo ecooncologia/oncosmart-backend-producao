@@ -1521,8 +1521,11 @@ app.get('/:tabela', async (req, res, next) => {
             dados.id_firebase = linha.id_firebase;
 
             // Anexos das guias podem ter MB de base64 — na listagem, envia só nome/data (base64 sob demanda)
-            if (tabela === 'guias_cirurgicas' && Array.isArray(dados.anexos)) {
-                dados.anexos = dados.anexos.map(a => ({ nome: a && a.nome, data_upload: a && a.data_upload }));
+            if (tabela === 'guias_cirurgicas') {
+                delete dados.dados_extras; // remove a coluna JSON crua (duplicada e pesada, com o base64)
+                if (Array.isArray(dados.anexos)) {
+                    dados.anexos = dados.anexos.map(a => ({ nome: a && a.nome, data_upload: a && a.data_upload }));
+                }
             }
 
             if (tabelaSQL === 'helpdesk_tickets') {
