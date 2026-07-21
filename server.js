@@ -1455,6 +1455,17 @@ app.get('/pacientes_aniversariantes', async (req, res) => {
 // ============================================================================
 // --- ROTA DE LEITURA (GET) ---
 // ============================================================================
+// Registro único de guia COM os anexos completos (base64) — usado sob demanda ao abrir os anexos.
+app.get('/guias_cirurgicas/:id', async (req, res) => {
+    try {
+        const [rows] = await pool.query("SELECT * FROM guias_cirurgicas WHERE id_firebase = ?", [req.params.id]);
+        if (!rows.length) return res.status(404).json({ error: 'Guia não encontrada.' });
+        let dados = {}; try { dados = JSON.parse(rows[0].dados_extras || '{}'); } catch (e) {}
+        dados = { ...rows[0], ...dados }; dados.id_firebase = rows[0].id_firebase; delete dados.dados_extras;
+        res.json(dados);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/:tabela', async (req, res, next) => {
     const { tabela } = req.params;
     if (tabela === 'custos_oracle') return next();
@@ -1508,6 +1519,11 @@ app.get('/:tabela', async (req, res, next) => {
             
             dados = { ...linha, ...dados };
             dados.id_firebase = linha.id_firebase;
+
+            // Anexos das guias podem ter MB de base64 — na listagem, envia só nome/data (base64 sob demanda)
+            if (tabela === 'guias_cirurgicas' && Array.isArray(dados.anexos)) {
+                dados.anexos = dados.anexos.map(a => ({ nome: a && a.nome, data_upload: a && a.data_upload }));
+            }
 
             if (tabelaSQL === 'helpdesk_tickets') {
                 dados.ticket_id = linha.id;
@@ -1901,13 +1917,32 @@ async function handleSave(req, res, next) {
                 await pool.query(`INSERT INTO repasse_unimed (${idField}, competencia, paciente, data_atendimento, descricao, tipo, quantidade, valor_pago, custo_correto, custo_errado, is_med_item, dados_extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE competencia=VALUES(competencia), paciente=VALUES(paciente), data_atendimento=VALUES(data_atendimento), descricao=VALUES(descricao), tipo=VALUES(tipo), quantidade=VALUES(quantidade), valor_pago=VALUES(valor_pago), custo_correto=IF(VALUES(custo_correto) IS NOT NULL, VALUES(custo_correto), custo_correto), custo_errado=IF(VALUES(custo_errado) IS NOT NULL, VALUES(custo_errado), custo_errado), is_med_item=VALUES(is_med_item), dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [dbId, dados.competencia || '', dados.paciente || '', dados.data_atendimento || '', dados.descricao || '', dados.tipo || 'MED', dados.quantidade || 1, dados.valor_pago || 0, dados.custo_correto !== undefined ? dados.custo_correto : null, dados.custo_errado !== undefined ? dados.custo_errado : null, dados.is_med_item ? 1 : 0, JSON.stringify(dados), JSON.stringify(dados)]);
             }
         }
+        else if (tabela === 'guias_cirurgicas') {
+            // Preserva o base64 dos anexos já existentes (a listagem envia os anexos SEM base64
+            // para não pesar; então ao salvar, restauramos o arquivo pelo nome/data_upload).
+            try {
+                if (Array.isArray(dados.anexos)) {
+                    const [rows] = await pool.query("SELECT dados_extras FROM guias_cirurgicas WHERE id_firebase = ?", [finalId]);
+                    let existentes = [];
+                    if (rows.length) { try { const c = JSON.parse(rows[0].dados_extras || '{}'); if (Array.isArray(c.anexos)) existentes = c.anexos; } catch (e) {} }
+                    dados.anexos = dados.anexos.map(a => {
+                        if (a && (!a.base64 || a.base64 === '')) {
+                            const orig = existentes.find(e => e && e.nome === a.nome && e.data_upload === a.data_upload) || existentes.find(e => e && e.nome === a.nome);
+                            if (orig && orig.base64) return { ...a, base64: orig.base64 };
+                        }
+                        return a;
+                    });
+                }
+            } catch (e) { console.warn('[guias] preserve anexos falhou:', e.message); }
+            await pool.query(`INSERT INTO guias_cirurgicas (id_firebase, dados_extras) VALUES (?, ?) ON DUPLICATE KEY UPDATE dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [finalId, JSON.stringify(dados), JSON.stringify(dados)]);
+        }
         else {
-            try { 
-                await pool.query(`INSERT INTO ${tabelaSQL} (id_firebase, dados_extras) VALUES (?, ?) ON DUPLICATE KEY UPDATE dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [finalId, JSON.stringify(dados), JSON.stringify(dados)]); 
+            try {
+                await pool.query(`INSERT INTO ${tabelaSQL} (id_firebase, dados_extras) VALUES (?, ?) ON DUPLICATE KEY UPDATE dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [finalId, JSON.stringify(dados), JSON.stringify(dados)]);
             } catch (err) {
-                if (err.code === 'ER_NO_SUCH_TABLE') { 
-                    await pool.query(`CREATE TABLE ${tabelaSQL} (id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(100) UNIQUE, dados_extras JSON)`); 
-                    await pool.query(`INSERT INTO ${tabelaSQL} (id_firebase, dados_extras) VALUES (?, ?)`, [finalId, JSON.stringify(dados)]); 
+                if (err.code === 'ER_NO_SUCH_TABLE') {
+                    await pool.query(`CREATE TABLE ${tabelaSQL} (id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(100) UNIQUE, dados_extras JSON)`);
+                    await pool.query(`INSERT INTO ${tabelaSQL} (id_firebase, dados_extras) VALUES (?, ?)`, [finalId, JSON.stringify(dados)]);
                 } else throw err;
             }
         }
