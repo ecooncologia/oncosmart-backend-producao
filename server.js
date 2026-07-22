@@ -49,7 +49,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use('/prints', express.static(path.join(__dirname, 'public', 'prints')));
 
 const CHAVE_MESTRA = process.env.CHAVE_MESTRA; 
-const rotasAbertas = ['/avaliar', '/webhook-review', '/registrar_ponto', '/webhook-ata']; 
+const rotasAbertas = ['/webhook-review', '/webhook-ata'];
 
 app.use((req, res, next) => {
     const portaAcessada = req.socket.localPort;
@@ -694,87 +694,6 @@ app.post('/auth/login_teste', async (req, res) => {
 
     } catch (error) {
         res.status(500).json({ success: false, error: 'Erro interno no servidor.' });
-    }
-});
-
-const GOOGLE_REVIEW_LINK = "https://g.page/r/CeOCD4ApuBEOEAE/review"; 
-const CARIMBO_GLOBAL = "eco_ja_avaliou_clinica";
-
-app.get('/avaliar', (req, res) => {
-    const funcId = req.query.func_id;
-
-    if (!funcId) return res.redirect(GOOGLE_REVIEW_LINK);
-
-    const cookies = req.headers.cookie || '';
-    if (cookies.includes(`${CARIMBO_GLOBAL}=true`)) {
-        return res.redirect(GOOGLE_REVIEW_LINK);
-    }
-
-    res.cookie(CARIMBO_GLOBAL, 'true', { maxAge: 10 * 365 * 24 * 60 * 60 * 1000, httpOnly: false, path: '/' });
-
-    const html = `
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <title>Avaliação Eco Oncologia</title>
-        <style>
-            body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background-color: #f9f9f9; color: #00855B; margin: 0; text-align: center; }
-            .spinner { width: 40px; height: 40px; border: 4px solid #ddd; border-top: 4px solid #00855B; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px; }
-            @keyframes spin { 100% { transform: rotate(360deg); } }
-        </style>
-    </head>
-    <body>
-        <div class="spinner"></div><h2>Preparando avaliação...</h2>
-        <script>
-            if (localStorage.getItem("${CARIMBO_GLOBAL}")) { window.location.replace("${GOOGLE_REVIEW_LINK}"); } 
-            else {
-                localStorage.setItem("${CARIMBO_GLOBAL}", 'true');
-                fetch('/registrar_ponto?func_id=${funcId}', { method: 'POST' }).then(() => window.location.replace("${GOOGLE_REVIEW_LINK}")).catch(() => window.location.replace("${GOOGLE_REVIEW_LINK}"));
-            }
-        </script>
-    </body>
-    </html>
-    `;
-    res.send(html);
-});
-
-app.post('/registrar_ponto', async (req, res) => {
-    const funcId = req.query.func_id;
-    const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
-
-    if (!funcId) return res.status(400).json({ error: "Faltando func_id" });
-
-    try {
-        try {
-            const fbRes = await fetch(`${FIREBASE_DB_URL}/intranet/ranking.json`);
-            const rankingData = await fbRes.json();
-            
-            if (rankingData) {
-                for (const [key, funcData] of Object.entries(rankingData)) {
-                    if (funcData.qrId === funcId || key === funcId) {
-                        const novosPontosTotais = (funcData.pontos || 0) + 1;
-                        const novosPontosMes = (funcData.pontos_mes || 0) + 1; 
-                        
-                        await fetch(`${FIREBASE_DB_URL}/intranet/ranking/${key}.json`, {
-                            method: 'PATCH',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ pontos: novosPontosTotais, pontos_mes: novosPontosMes })
-                        });
-                        break;
-                    }
-                }
-            }
-        } catch (fbErro) {
-            console.error("[Ranking] Erro Firebase:", fbErro);
-        }
-
-        await pool.query('INSERT INTO qr_scans (func_qr_id, ip_address) VALUES (?, ?)', [funcId, ip]);
-        await pool.query('INSERT INTO avaliacoes_google (review_id, func_qr_id, reviewer_name, rating, created_at) VALUES (?, ?, ?, ?, NOW())', ["QR_" + Date.now(), funcId, `Acesso HTML IP: ${ip}`, 5]);
-
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
     }
 });
 
@@ -2219,49 +2138,7 @@ setInterval(() => {
 }, 60000); 
 
 // ============================================================================
-// 🔄 ROTINA AUTOMÁTICA DE VIRADA DE MÊS (RANKING)
-// ============================================================================
-setInterval(async () => {
-    try {
-        const mesAtual = new Date().getMonth(); 
-        
-        const [rows] = await pool.query("SELECT dados_extras FROM system_configs WHERE id_firebase = 'ranking_mes_info'");
-        let mesSalvo = -1;
-        
-        if (rows.length > 0) {
-            const dataConfig = JSON.parse(rows[0].dados_extras);
-            mesSalvo = dataConfig.mes;
-        }
-
-        if (mesSalvo !== -1 && mesSalvo !== mesAtual) {
-            console.log("=========================================");
-            console.log("[Auto-Reset] VIRADA DE MÊS DETECTADA! Gerando Pódio...");
-            
-            const fbRes = await fetch(`${FIREBASE_DB_URL}/intranet/ranking.json`);
-            const rankingData = await fbRes.json();
-            
-            if (rankingData) {
-                const list = Object.entries(rankingData).map(([k, v]) => ({ id: k, ...v }));
-                list.sort((a, b) => (b.pontos_mes || 0) - (a.pontos_mes || 0));
-                
-                const top3 = list.slice(0, 3);
-                
-                await fetch(`${FIREBASE_DB_URL}/intranet/vencedores_mes.json`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(top3) });
-                
-                for (const func of list) {
-                    await fetch(`${FIREBASE_DB_URL}/intranet/ranking/${func.id}.json`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pontos_mes: 0 }) });
-                }
-            }
-            await pool.query("UPDATE system_configs SET dados_extras = ? WHERE id_firebase = 'ranking_mes_info'", [JSON.stringify({ mes: mesAtual })]);
-            console.log("[Auto-Reset] Pódio gerado e Ranking MENSAL zerado com sucesso!");
-        } else if (mesSalvo === -1) {
-            await pool.query("INSERT INTO system_configs (id_firebase, dados_extras) VALUES ('ranking_mes_info', ?) ON DUPLICATE KEY UPDATE dados_extras=VALUES(dados_extras)", [JSON.stringify({ mes: mesAtual })]);
-        }
-    } catch (e) { console.error("[Auto-Reset Ranking] Erro na verificação mensal:", e); }
-}, 1000 * 60 * 60);
-
-// ============================================================================
-// 🚀 INICIALIZAÇÃO E ARQUIVO .ENV 
+// 🚀 INICIALIZAÇÃO E ARQUIVO .ENV
 // ============================================================================
 const PORT_INTERNA = process.env.PORT_INTERNA || 3000;
 const PORT_EXTERNA_QR = process.env.PORT_EXTERNA_QR || 3001;
