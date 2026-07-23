@@ -302,7 +302,7 @@ async function computarEstoqueTasy(force = false) {
             const temMinimo = m.minimo !== undefined && m.minimo !== null && m.minimo !== '';
             const limite = Math.max(1, temMinimo ? parseFloat(m.minimo) : minimoAuto);
             const oculto = m.oculto === true;
-            return { ds_material: nome, unidade: r.UN || '', disponivel: disp, consumo3, limite, minimo: temMinimo ? parseFloat(m.minimo) : null, oculto, status: disp <= limite ? 'baixo' : 'ok' };
+            return { ds_material: nome, unidade: r.UN || '', disponivel: disp, consumo3, limite, minimo: temMinimo ? parseFloat(m.minimo) : null, oculto, categoria: m.categoria || null, status: disp <= limite ? 'baixo' : 'ok' };
         }).sort((a, b) => a.disponivel - b.disponivel);
         estoqueTasyCache = { data, ts: Date.now() };
         console.log(`📦 [Estoque Tasy] ${data.length} medicamentos (${data.filter(x => x.status === 'baixo' && !x.oculto).length} baixos visíveis).`);
@@ -322,7 +322,7 @@ app.get('/estoque_tasy/alerta', async (req, res) => {
 // body: { nomes: [..], minimo?: (number|null p/ limpar), oculto?: bool }
 app.post('/estoque_tasy/config', async (req, res) => {
     try {
-        const { nomes, minimo, oculto } = req.body || {};
+        const { nomes, minimo, oculto, categoria } = req.body || {};
         const lista = Array.isArray(nomes) ? nomes.filter(Boolean) : (nomes ? [nomes] : []);
         if (!lista.length) return res.status(400).json({ error: 'nomes é obrigatório.' });
         const cfg = await lerCfgEstoqueTasy();
@@ -334,6 +334,10 @@ app.post('/estoque_tasy/config', async (req, res) => {
                 else m.minimo = parseFloat(minimo);
             }
             if (oculto !== undefined) m.oculto = !!oculto;
+            if (categoria !== undefined) {
+                if (categoria === null || categoria === '' || categoria === 'geral') delete m.categoria;
+                else m.categoria = String(categoria);
+            }
         });
         await salvarCfgEstoqueTasy(cfg);
         estoqueTasyCache = { data: null, ts: 0 };
