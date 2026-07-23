@@ -340,7 +340,21 @@ app.post('/estoque_tasy/config', async (req, res) => {
             }
         });
         await salvarCfgEstoqueTasy(cfg);
-        estoqueTasyCache = { data: null, ts: 0 };
+        // Atualiza o cache no lugar (não re-consulta o Oracle a cada mudança de config — agilidade)
+        if (estoqueTasyCache.data) {
+            const alvo = new Set(lista);
+            estoqueTasyCache.data.forEach(item => {
+                if (!alvo.has(item.ds_material)) return;
+                const m = cfg.meds[item.ds_material] || {};
+                item.categoria = m.categoria || null;
+                item.oculto = m.oculto === true;
+                const temMin = m.minimo !== undefined && m.minimo !== null && m.minimo !== '';
+                const auto = Math.max(1, Math.floor((parseFloat(item.consumo3) || 0) / 3));
+                item.minimo = temMin ? parseFloat(m.minimo) : null;
+                item.limite = Math.max(1, temMin ? parseFloat(m.minimo) : auto);
+                item.status = item.disponivel <= item.limite ? 'baixo' : 'ok';
+            });
+        }
         res.json({ ok: true, afetados: lista.length });
     } catch (e) { console.error('❌ [Estoque Tasy] erro ao salvar config:', e.message); res.status(500).json({ error: e.message }); }
 });
