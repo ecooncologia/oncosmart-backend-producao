@@ -282,6 +282,7 @@ async function computarEstoqueTasy(force = false) {
         const q = `
             WITH mes AS (SELECT MAX(DT_MESANO_REFERENCIA) AS mes_atual FROM TASY.ACOMPANHAMENTO_ESTOQUE)
             SELECT ae.DS_MATERIAL,
+                   MAX(ae.CD_MATERIAL) AS CD,
                    MAX(ae.CD_UNIDADE_MEDIDA_ESTOQUE) AS UN,
                    SUM(CASE WHEN ae.DT_MESANO_REFERENCIA = m.mes_atual THEN ae.QT_ESTOQUE_DISP ELSE 0 END) AS DISP,
                    SUM(CASE WHEN ae.DT_MESANO_REFERENCIA <  m.mes_atual
@@ -302,10 +303,10 @@ async function computarEstoqueTasy(force = false) {
             const temMinimo = m.minimo !== undefined && m.minimo !== null && m.minimo !== '';
             const limite = Math.max(1, temMinimo ? parseFloat(m.minimo) : minimoAuto);
             const oculto = m.oculto === true;
-            return { ds_material: nome, unidade: r.UN || '', disponivel: disp, consumo3, limite, minimo: temMinimo ? parseFloat(m.minimo) : null, oculto, categoria: m.categoria || null, status: disp <= limite ? 'baixo' : 'ok' };
+            return { ds_material: nome, codigo: r.CD != null ? String(r.CD) : null, unidade: r.UN || '', disponivel: disp, consumo3, limite, minimo: temMinimo ? parseFloat(m.minimo) : null, oculto, categoria: m.categoria || null, status: disp <= limite ? 'baixo' : 'ok' };
         }).sort((a, b) => a.disponivel - b.disponivel);
         estoqueTasyCache = { data, ts: Date.now() };
-        console.log(`📦 [Estoque Tasy] ${data.length} medicamentos (${data.filter(x => x.status === 'baixo' && !x.oculto).length} baixos visíveis).`);
+        console.log(`📦 [Estoque Tasy] ${data.length} medicamentos (${data.filter(x => x.status === 'baixo' && !x.oculto && !x.categoria).length} baixos visíveis).`);
         return data;
     } finally { if (connection) { try { await connection.close(); } catch (e) {} } }
 }
@@ -315,7 +316,7 @@ app.get('/estoque_tasy', async (req, res) => {
     catch (e) { console.error('❌ [Estoque Tasy] erro:', e.message); res.status(500).json({ error: 'Erro ao consultar o estoque no Tasy: ' + e.message }); }
 });
 app.get('/estoque_tasy/alerta', async (req, res) => {
-    try { const d = await computarEstoqueTasy(); res.json({ baixos: d.filter(x => x.status === 'baixo' && !x.oculto).length, total: d.filter(x => !x.oculto).length }); }
+    try { const d = await computarEstoqueTasy(); res.json({ baixos: d.filter(x => x.status === 'baixo' && !x.oculto && !x.categoria).length, total: d.filter(x => !x.oculto).length }); }
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 // Define mínimo e/ou oculta para um ou vários medicamentos.
