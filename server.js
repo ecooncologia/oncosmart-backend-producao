@@ -187,6 +187,7 @@ app.get('/custos_oracle', async (req, res) => {
         res.status(500).json({ error: "Erro ao buscar dados do Oracle: " + err.message });
     } finally {
         if (connection) {
+            console.log('errooo')
             try { await connection.close(); } catch (e) { console.error(e); }
         }
     }
@@ -287,7 +288,9 @@ async function computarEstoqueTasy(force = false) {
                    SUM(CASE WHEN ae.DT_MESANO_REFERENCIA = m.mes_atual THEN ae.QT_ESTOQUE_DISP ELSE 0 END) AS DISP,
                    SUM(CASE WHEN ae.DT_MESANO_REFERENCIA <  m.mes_atual
                              AND ae.DT_MESANO_REFERENCIA >= ADD_MONTHS(m.mes_atual, -3)
-                            THEN ae.QT_CONSUMO ELSE 0 END) AS CONSUMO3
+                            THEN ae.QT_CONSUMO ELSE 0 END) AS CONSUMO3,
+                   SUM(CASE WHEN ae.DT_MESANO_REFERENCIA = ADD_MONTHS(m.mes_atual, -1)
+                            THEN ae.QT_CONSUMO ELSE 0 END) AS CONSUMO_ANT
               FROM TASY.ACOMPANHAMENTO_ESTOQUE ae CROSS JOIN mes m
              WHERE ae.DS_MATERIAL IS NOT NULL
              GROUP BY ae.DS_MATERIAL`;
@@ -297,13 +300,14 @@ async function computarEstoqueTasy(force = false) {
             const nome = r.DS_MATERIAL || '';
             const disp = parseFloat(r.DISP || 0);
             const consumo3 = parseFloat(r.CONSUMO3 || 0);
+            const consumoMesAnterior = parseFloat(r.CONSUMO_ANT || 0);
             const m = cfg.meds[nome] || {};
             // Mínimo automático = média mensal de consumo dos 3 meses anteriores (piso). Nunca zero (mín. 1).
             const minimoAuto = Math.max(1, Math.floor(consumo3 / 3));
             const temMinimo = m.minimo !== undefined && m.minimo !== null && m.minimo !== '';
             const limite = Math.max(1, temMinimo ? parseFloat(m.minimo) : minimoAuto);
             const oculto = m.oculto === true;
-            return { ds_material: nome, codigo: r.CD != null ? String(r.CD) : null, unidade: r.UN || '', disponivel: disp, consumo3, limite, minimo: temMinimo ? parseFloat(m.minimo) : null, oculto, categoria: m.categoria || null, status: disp <= limite ? 'baixo' : 'ok' };
+            return { ds_material: nome, codigo: r.CD != null ? String(r.CD) : null, unidade: r.UN || '', disponivel: disp, consumo3, consumo_mes_anterior: consumoMesAnterior, limite, minimo: temMinimo ? parseFloat(m.minimo) : null, oculto, categoria: m.categoria || null, status: disp <= limite ? 'baixo' : 'ok' };
         }).sort((a, b) => a.disponivel - b.disponivel);
         estoqueTasyCache = { data, ts: Date.now() };
         console.log(`📦 [Estoque Tasy] ${data.length} medicamentos (${data.filter(x => x.status === 'baixo' && !x.oculto && !x.categoria).length} baixos visíveis).`);
@@ -318,6 +322,38 @@ app.get('/estoque_tasy', async (req, res) => {
 app.get('/estoque_tasy/alerta', async (req, res) => {
     try { const d = await computarEstoqueTasy(); res.json({ baixos: d.filter(x => x.status === 'baixo' && !x.oculto && !x.categoria).length, total: d.filter(x => !x.oculto).length }); }
     catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 🩺 AGENDA DOS CONSULTÓRIOS — lê a view do Tasy (médico -> sala/consultório).
+// Retorna só quem já tem DS_SALA preenchida, com o número do consultório (1-9).
+let agendaConsCache = { data: null, ts: 0 };
+const AGENDA_CONS_TTL = 20 * 1000;
+async function lerAgendaConsultoriosView(force = false) {
+    if (!force && agendaConsCache.data && (Date.now() - agendaConsCache.ts) < AGENDA_CONS_TTL) return agendaConsCache.data;
+    let connection;
+    try {
+        connection = await oracledb.getConnection(dbConfigOracle);
+        // View = padrão semanal recorrente (DIA_SEMANA + TURNO). Ignora médico/sala/turno nulos.
+        const r = await connection.execute(`SELECT MEDICO, DS_SALA, DIA_SEMANA, TURNO FROM TASY.agendamentos_consultorios WHERE DS_SALA IS NOT NULL AND MEDICO IS NOT NULL AND TURNO IS NOT NULL`);
+        const MAPA_DIA = { segunda: 1, terca: 2, quarta: 3, quinta: 4, sexta: 5, sabado: 6, domingo: 7 };
+        const MAPA_TURNO = { manha: 'M', tarde: 'T' };
+        const norm = s => String(s || '').toLowerCase().replace(/ç/g, 'c').replace(/[áàâã]/g, 'a').replace(/é/g, 'e').replace('-feira', '').trim();
+        const data = [];
+        (r.rows || []).forEach(row => {
+            const medico = (row.MEDICO || '').trim();
+            const mt = String(row.DS_SALA || '').match(/(\d+)/);
+            const num = mt ? parseInt(mt[1], 10) : null;
+            const dia = MAPA_DIA[norm(row.DIA_SEMANA)] || null;      // 1=Seg ... 7=Dom
+            const turno = MAPA_TURNO[norm(row.TURNO)] || null;       // M | T
+            if (medico && num && num >= 1 && num <= 9 && dia && turno) data.push({ medico, consultorio: num, dia, turno });
+        });
+        agendaConsCache = { data, ts: Date.now() };
+        return data;
+    } finally { if (connection) { try { await connection.close(); } catch (e) {} } }
+}
+app.get('/agenda_consultorios_live', async (req, res) => {
+    try { res.json(await lerAgendaConsultoriosView(req.query.force === '1')); }
+    catch (e) { console.error('❌ [Agenda Consultórios] erro:', e.message); res.status(500).json({ error: e.message }); }
 });
 // Define mínimo e/ou oculta para um ou vários medicamentos.
 // body: { nomes: [..], minimo?: (number|null p/ limpar), oculto?: bool }
@@ -716,13 +752,66 @@ app.post('/auth/login_teste', async (req, res) => {
     }
 });
 
+// Resumo de ata via Gemini (plano gratuito). Recebe a transcrição crua e devolve
+// um resumo executivo em tópicos, no formato que o atas.html renderiza. Retorna
+// null em qualquer falha (o webhook cai de volta na transcrição crua, sem perder nada).
+async function gerarResumoAtaIA(transcript) {
+    const KEY = process.env.GEMINI_API_KEY;
+    if (!KEY || !transcript || !transcript.trim()) return null;
+
+    const prompt = `Você é um secretário executivo que redige atas de reunião. A partir da TRANSCRIÇÃO abaixo (fala corrida, pode conter ruídos e assuntos irrelevantes), gere um RESUMO EXECUTIVO em português do Brasil organizado em TÓPICOS.
+
+Regras de formato (OBRIGATÓRIAS):
+- Cada tópico começa com um título em negrito, com um emoji relacionado ao assunto, exatamente assim: **🩺 Título do Tópico**
+- Abaixo do título, escreva os pontos discutidos, UM POR LINHA, cada um como uma frase completa terminando em ponto final.
+- NÃO inicie as linhas de pontos com hífen, asterisco ou bullet — apenas a frase.
+- Deixe UMA linha em branco entre um tópico e o próximo.
+- Use de 2 a 6 tópicos, conforme o conteúdo.
+- Seja fiel ao que foi dito: não invente informações. Ignore conversas irrelevantes.
+- Não escreva saudação, introdução ou conclusão fora dos tópicos.
+
+TRANSCRIÇÃO:
+"""${transcript}"""`;
+
+    try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 25000);
+        const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${KEY}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.3 } }),
+            signal: ctrl.signal
+        });
+        clearTimeout(timer);
+        if (!resp.ok) { console.warn('[Ata IA] Gemini respondeu', resp.status); return null; }
+        const data = await resp.json();
+        let texto = (data?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+        if (!texto) return null;
+        // Normaliza: linhas que não são título não podem começar com marcador (senão viram cabeçalho no renderizador)
+        texto = texto.split('\n').map(l => {
+            const t = l.trim();
+            if (t.includes('**')) return t;
+            return t.replace(/^[-*•o○▪‣]\s+/, '');
+        }).join('\n');
+        return texto;
+    } catch (e) {
+        console.warn('[Ata IA] Falha ao gerar resumo:', e.message);
+        return null;
+    }
+}
+
 app.post('/webhook-ata', async (req, res) => {
     const chaveRecebida = req.headers['x-api-key'] || req.query.api_key || req.body.api_key;
     if (chaveRecebida !== CHAVE_MESTRA) return res.status(401).json({ erro: "Acesso Negado: Chave de API inválida." });
 
     try {
         const { title, date, resumo, transcript } = req.body;
-        let ataFinal = "🎙️ Registro Automático - Resumo Executivo\n\n" + (resumo || transcript || "Nenhum resumo foi gerado.");
+        let corpoResumo = resumo;
+        if (!corpoResumo && transcript) {
+            const resumoIA = await gerarResumoAtaIA(transcript);
+            if (resumoIA) corpoResumo = resumoIA;
+        }
+        let ataFinal = "🎙️ Registro Automático - Resumo Executivo\n\n" + (corpoResumo || transcript || "Nenhum resumo foi gerado.");
         let dataBusca = date ? (date.includes('T') ? date.split('T')[0] : date) : new Date().toISOString().split('T')[0];
         
         const [rows] = await pool.query('SELECT id_firebase, dados_extras FROM events WHERE date = ? LIMIT 1', [dataBusca]);
@@ -1443,6 +1532,11 @@ app.get('/:tabela', async (req, res, next) => {
         if (tabela === 'selos_registros') tabelaSQL = 'selos';
         if (tabela === 'chamados') tabelaSQL = 'helpdesk_tickets';
 
+        if (tabela === 'biblioteca_livros' || tabela === 'biblioteca_emprestimos') {
+            try { await pool.query(`SELECT 1 FROM ${tabelaSQL} LIMIT 1`); }
+            catch(e) { if (e.code === 'ER_NO_SUCH_TABLE') return res.json({}); }
+        }
+
         if (tabela === 'grupos_medicos') {
             try { await pool.query('SELECT 1 FROM grupos_medicos LIMIT 1'); } 
             catch(e) { if (e.code === 'ER_NO_SUCH_TABLE') { await pool.query(`CREATE TABLE grupos_medicos (id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(100) UNIQUE, dados_extras JSON)`); } }
@@ -1876,6 +1970,60 @@ async function handleSave(req, res, next) {
                 }
             } catch (e) { console.warn('[guias] preserve anexos falhou:', e.message); }
             await pool.query(`INSERT INTO guias_cirurgicas (id_firebase, dados_extras) VALUES (?, ?) ON DUPLICATE KEY UPDATE dados_extras = JSON_MERGE_PATCH(COALESCE(dados_extras, '{}'), ?)`, [finalId, JSON.stringify(dados), JSON.stringify(dados)]);
+        }
+        else if (tabela === 'patrimonio') {
+            // Cada campo vira coluna própria (banco organizado) E fica também no dados_extras.
+            await pool.query(`CREATE TABLE IF NOT EXISTS patrimonio (
+                id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(120) UNIQUE,
+                num_patrimonio VARCHAR(100), responsavel VARCHAR(255), localizacao VARCHAR(255),
+                descricao VARCHAR(500), serial_number VARCHAR(255), marca VARCHAR(255),
+                num_nf VARCHAR(100), valor DECIMAL(12,2), fornecedor VARCHAR(255),
+                situacao VARCHAR(20), observacao TEXT, dados_extras JSON)`);
+            const d = dados;
+            const val = (d.valor === '' || d.valor == null) ? null : (parseFloat(d.valor) || 0);
+            await pool.query(
+                `INSERT INTO patrimonio (id_firebase, num_patrimonio, responsavel, localizacao, descricao, serial_number, marca, num_nf, valor, fornecedor, situacao, observacao, dados_extras)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE num_patrimonio=VALUES(num_patrimonio), responsavel=VALUES(responsavel), localizacao=VALUES(localizacao), descricao=VALUES(descricao), serial_number=VALUES(serial_number), marca=VALUES(marca), num_nf=VALUES(num_nf), valor=VALUES(valor), fornecedor=VALUES(fornecedor), situacao=VALUES(situacao), observacao=VALUES(observacao), dados_extras=JSON_MERGE_PATCH(COALESCE(dados_extras,'{}'), ?)`,
+                [finalId, d.num_patrimonio||null, d.responsavel||null, d.local||null, d.descricao||null, d.serial_number||null, d.marca||null, d.num_nf||null, val, d.fornecedor||null, d.situacao||'Ativo', d.observacao||null, JSON.stringify(d), JSON.stringify(d)]
+            );
+        }
+        else if (tabela === 'biblioteca_livros') {
+            // Acervo da biblioteca (empréstimo sem custo) — cada campo em coluna própria.
+            await pool.query(`CREATE TABLE IF NOT EXISTS biblioteca_livros (
+                id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(120) UNIQUE,
+                titulo VARCHAR(500), autor VARCHAR(255), categoria VARCHAR(120),
+                editora VARCHAR(255), ano VARCHAR(10), isbn VARCHAR(50),
+                quantidade INT DEFAULT 1, capa_url TEXT, sinopse TEXT,
+                localizacao VARCHAR(255), situacao VARCHAR(20), observacao TEXT,
+                dados_extras JSON)`);
+            const d = dados;
+            const qtd = (d.quantidade === '' || d.quantidade == null) ? 1 : (parseInt(d.quantidade) || 0);
+            await pool.query(
+                `INSERT INTO biblioteca_livros (id_firebase, titulo, autor, categoria, editora, ano, isbn, quantidade, capa_url, sinopse, localizacao, situacao, observacao, dados_extras)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE titulo=VALUES(titulo), autor=VALUES(autor), categoria=VALUES(categoria), editora=VALUES(editora), ano=VALUES(ano), isbn=VALUES(isbn), quantidade=VALUES(quantidade), capa_url=VALUES(capa_url), sinopse=VALUES(sinopse), localizacao=VALUES(localizacao), situacao=VALUES(situacao), observacao=VALUES(observacao), dados_extras=JSON_MERGE_PATCH(COALESCE(dados_extras,'{}'), ?)`,
+                [finalId, d.titulo||null, d.autor||null, d.categoria||null, d.editora||null, d.ano||null, d.isbn||null, qtd, d.capa_url||null, d.sinopse||null, d.localizacao||null, d.situacao||'Ativo', d.observacao||null, JSON.stringify(d), JSON.stringify(d)]
+            );
+        }
+        else if (tabela === 'biblioteca_emprestimos') {
+            // Reservas/empréstimos: status = reservado | emprestado | devolvido | cancelado
+            await pool.query(`CREATE TABLE IF NOT EXISTS biblioteca_emprestimos (
+                id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(120) UNIQUE,
+                livro_id VARCHAR(120), livro_titulo VARCHAR(500),
+                solicitante VARCHAR(255), telefone VARCHAR(50), tipo_solicitante VARCHAR(40),
+                origem VARCHAR(40), status VARCHAR(20),
+                data_reserva DATETIME, data_retirada DATETIME, data_prevista DATE, data_devolucao DATETIME,
+                observacao TEXT, dados_extras JSON)`);
+            const d = dados;
+            const dt = (v) => { if (!v) return null; const x = new Date(v); return isNaN(x) ? null : x.toISOString().slice(0,19).replace('T',' '); };
+            const dia = (v) => { if (!v) return null; const str = String(v); return str.includes('T') ? str.split('T')[0] : str.slice(0,10); };
+            await pool.query(
+                `INSERT INTO biblioteca_emprestimos (id_firebase, livro_id, livro_titulo, solicitante, telefone, tipo_solicitante, origem, status, data_reserva, data_retirada, data_prevista, data_devolucao, observacao, dados_extras)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE livro_id=VALUES(livro_id), livro_titulo=VALUES(livro_titulo), solicitante=VALUES(solicitante), telefone=VALUES(telefone), tipo_solicitante=VALUES(tipo_solicitante), origem=VALUES(origem), status=VALUES(status), data_reserva=COALESCE(VALUES(data_reserva), data_reserva), data_retirada=VALUES(data_retirada), data_prevista=VALUES(data_prevista), data_devolucao=VALUES(data_devolucao), observacao=VALUES(observacao), dados_extras=JSON_MERGE_PATCH(COALESCE(dados_extras,'{}'), ?)`,
+                [finalId, d.livro_id||null, d.livro_titulo||null, d.solicitante||null, d.telefone||null, d.tipo_solicitante||null, d.origem||'interno', d.status||'reservado', dt(d.data_reserva) || dt(new Date()), dt(d.data_retirada), dia(d.data_prevista), dt(d.data_devolucao), d.observacao||null, JSON.stringify(d), JSON.stringify(d)]
+            );
         }
         else {
             try {

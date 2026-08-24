@@ -4,6 +4,7 @@ google-credentials.json
 
 # Certificados de Segurança SSL
 *.pem
+*.pem.bak
 
 # Dependências
 node_modules/
@@ -14,3 +15,7 @@ downloads_unimed/
 *.sql
 *.tgz
 cloudflared-linux-amd64
+
+# Prints gerados pelo robô da Unimed (evidências, não fazem parte do código)
+public/prints/
+erro_*.png
