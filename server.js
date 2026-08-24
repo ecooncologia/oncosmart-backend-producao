@@ -58,11 +58,13 @@ app.use((req, res, next) => {
     // 🏆 Bolão da Copa: única exceção externa — a página (/bolao) e as rotas /bolao/*.
     // As rotas /bolao/* continuam exigindo a chave de API logo abaixo; todo o resto segue 403 externamente.
     const ehBolao = req.path === '/bolao' || req.path.startsWith('/bolao/');
+    // 📚 Biblioteca: a reserva do paciente vem de fora da rede (QR Code). Continua exigindo a chave.
+    const ehBiblioteca = req.path === '/biblioteca' || req.path.startsWith('/biblioteca/');
 
-    if (portasExternas.includes(portaAcessada) && !rotasAbertas.includes(req.path) && !ehBolao) {
+    if (portasExternas.includes(portaAcessada) && !rotasAbertas.includes(req.path) && !ehBolao && !ehBiblioteca) {
         return res.status(403).json({ erro: "Forbidden: Rota interna não acessível externamente." });
     }
-    if (rotasAbertas.includes(req.path) || req.path === '/bolao') {
+    if (rotasAbertas.includes(req.path) || req.path === '/bolao' || req.path === '/biblioteca') {
         return next();
     }
 
@@ -1491,6 +1493,98 @@ app.get('/guias_cirurgicas/:id', async (req, res) => {
         dados = { ...rows[0], ...dados }; dados.id_firebase = rows[0].id_firebase; delete dados.dados_extras;
         res.json(dados);
     } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ============================================================================
+// 📚 BIBLIOTECA PÚBLICA — acessível de fora da rede (mesmo padrão do Bolão):
+// a própria API serve a página e expõe só o necessário (acervo + reserva).
+// ============================================================================
+app.get('/biblioteca', (req, res) => {
+    const arquivo = path.join(__dirname, 'ONCO-SMART-FRONT', 'biblioteca-reserva.html');
+    if (!fs.existsSync(arquivo)) return res.status(404).send('Página da biblioteca indisponível neste ambiente.');
+    res.sendFile(arquivo);
+});
+
+// Acervo com a disponibilidade já calculada — não expõe campos internos.
+app.get('/biblioteca/acervo', async (req, res) => {
+    try {
+        let livros = [], emprestimos = [];
+        try { [livros] = await pool.query("SELECT * FROM biblioteca_livros"); }
+        catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
+        try { [emprestimos] = await pool.query("SELECT livro_id, status FROM biblioteca_emprestimos WHERE status IN ('reservado','emprestado')"); }
+        catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
+
+        const ocupados = {};
+        emprestimos.forEach(e => { ocupados[e.livro_id] = (ocupados[e.livro_id] || 0) + 1; });
+
+        const lista = livros.map(l => {
+            let extras = {};
+            try { extras = JSON.parse(l.dados_extras || '{}'); } catch (e) {}
+            const d = { ...l, ...extras };
+            const qtd = parseInt(d.quantidade) || 0;
+            return {
+                id_firebase: l.id_firebase,
+                titulo: d.titulo || '',
+                autor: d.autor || '',
+                categoria: d.categoria || '',
+                sinopse: d.sinopse || '',
+                capa_url: d.capa_url || '',
+                situacao: d.situacao || 'Ativo',
+                quantidade: qtd,
+                disponiveis: Math.max(0, qtd - (ocupados[l.id_firebase] || 0))
+            };
+        }).filter(l => !String(l.situacao).toLowerCase().startsWith('inat'));
+
+        res.json({ livros: lista });
+    } catch (e) {
+        console.error('[Biblioteca] Erro no acervo:', e.message);
+        res.status(500).json({ error: 'Falha ao carregar o acervo.' });
+    }
+});
+
+// Reserva feita pelo paciente — a disponibilidade é conferida AQUI (evita reserva duplicada).
+app.post('/biblioteca/reservar', async (req, res) => {
+    try {
+        const { livro_id, solicitante, telefone, tipo_solicitante } = req.body || {};
+        if (!livro_id || !String(solicitante || '').trim()) {
+            return res.status(400).json({ ok: false, motivo: 'dados_incompletos' });
+        }
+
+        const [rows] = await pool.query("SELECT * FROM biblioteca_livros WHERE id_firebase = ?", [livro_id]);
+        if (!rows.length) return res.status(404).json({ ok: false, motivo: 'livro_inexistente' });
+
+        let extras = {};
+        try { extras = JSON.parse(rows[0].dados_extras || '{}'); } catch (e) {}
+        const livro = { ...rows[0], ...extras };
+        if (String(livro.situacao || 'Ativo').toLowerCase().startsWith('inat')) {
+            return res.status(409).json({ ok: false, motivo: 'indisponivel' });
+        }
+
+        const [ocup] = await pool.query(
+            "SELECT COUNT(*) AS n FROM biblioteca_emprestimos WHERE livro_id = ? AND status IN ('reservado','emprestado')",
+            [livro_id]
+        );
+        const disponiveis = (parseInt(livro.quantidade) || 0) - (ocup[0] ? ocup[0].n : 0);
+        if (disponiveis <= 0) return res.status(409).json({ ok: false, motivo: 'indisponivel' });
+
+        const id = `emp_${Date.now()}`;
+        const agora = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        const dados = {
+            id_firebase: id, livro_id, livro_titulo: livro.titulo || '',
+            solicitante: String(solicitante).trim(), telefone: String(telefone || '').trim(),
+            tipo_solicitante: tipo_solicitante || 'paciente',
+            origem: 'qr', status: 'reservado', data_reserva: agora
+        };
+        await pool.query(
+            `INSERT INTO biblioteca_emprestimos (id_firebase, livro_id, livro_titulo, solicitante, telefone, tipo_solicitante, origem, status, data_reserva, dados_extras)
+             VALUES (?,?,?,?,?,?,?,?,?,?)`,
+            [id, livro_id, dados.livro_titulo, dados.solicitante, dados.telefone, dados.tipo_solicitante, 'qr', 'reservado', agora, JSON.stringify(dados)]
+        );
+        res.json({ ok: true, id, livro: dados.livro_titulo });
+    } catch (e) {
+        console.error('[Biblioteca] Erro na reserva:', e.message);
+        res.status(500).json({ ok: false, motivo: 'erro_interno' });
+    }
 });
 
 app.get('/:tabela', async (req, res, next) => {
