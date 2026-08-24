@@ -1736,6 +1736,41 @@ app.post('/notificar-whatsapp', async (req, res) => {
 // ============================================================================
 // ✍️ ROTA DE ESCRITA (POST / PUT) - JSON_MERGE_PATCH
 // ============================================================================
+// Colunas da biblioteca — a tabela pode ter nascido no formato genérico (só dados_extras),
+// então garantimos cada coluna uma vez por processo. ALTER duplicado é ignorado.
+let _bibliotecaMigrada = false;
+async function garantirColunasBiblioteca(pool) {
+    if (_bibliotecaMigrada) return;
+    const alters = [
+        "ALTER TABLE biblioteca_livros ADD COLUMN titulo VARCHAR(500)",
+        "ALTER TABLE biblioteca_livros ADD COLUMN autor VARCHAR(255)",
+        "ALTER TABLE biblioteca_livros ADD COLUMN categoria VARCHAR(120)",
+        "ALTER TABLE biblioteca_livros ADD COLUMN editora VARCHAR(255)",
+        "ALTER TABLE biblioteca_livros ADD COLUMN ano VARCHAR(10)",
+        "ALTER TABLE biblioteca_livros ADD COLUMN isbn VARCHAR(50)",
+        "ALTER TABLE biblioteca_livros ADD COLUMN quantidade INT DEFAULT 1",
+        "ALTER TABLE biblioteca_livros ADD COLUMN capa_url TEXT",
+        "ALTER TABLE biblioteca_livros ADD COLUMN sinopse TEXT",
+        "ALTER TABLE biblioteca_livros ADD COLUMN localizacao VARCHAR(255)",
+        "ALTER TABLE biblioteca_livros ADD COLUMN situacao VARCHAR(20)",
+        "ALTER TABLE biblioteca_livros ADD COLUMN observacao TEXT",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN livro_id VARCHAR(120)",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN livro_titulo VARCHAR(500)",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN solicitante VARCHAR(255)",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN telefone VARCHAR(50)",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN tipo_solicitante VARCHAR(40)",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN origem VARCHAR(40)",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN status VARCHAR(20)",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN data_reserva DATETIME",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN data_retirada DATETIME",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN data_prevista DATE",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN data_devolucao DATETIME",
+        "ALTER TABLE biblioteca_emprestimos ADD COLUMN observacao TEXT"
+    ];
+    for (const sql of alters) { try { await pool.query(sql); } catch (e) {} }
+    _bibliotecaMigrada = true;
+}
+
 async function handleSave(req, res, next) {
     const { tabela, id } = req.params;
     if (tabela === 'custos_oracle') return next();
@@ -1997,6 +2032,7 @@ async function handleSave(req, res, next) {
                 quantidade INT DEFAULT 1, capa_url TEXT, sinopse TEXT,
                 localizacao VARCHAR(255), situacao VARCHAR(20), observacao TEXT,
                 dados_extras JSON)`);
+            await garantirColunasBiblioteca(pool);
             const d = dados;
             const qtd = (d.quantidade === '' || d.quantidade == null) ? 1 : (parseInt(d.quantidade) || 0);
             await pool.query(
@@ -2015,6 +2051,7 @@ async function handleSave(req, res, next) {
                 origem VARCHAR(40), status VARCHAR(20),
                 data_reserva DATETIME, data_retirada DATETIME, data_prevista DATE, data_devolucao DATETIME,
                 observacao TEXT, dados_extras JSON)`);
+            await garantirColunasBiblioteca(pool);
             const d = dados;
             const dt = (v) => { if (!v) return null; const x = new Date(v); return isNaN(x) ? null : x.toISOString().slice(0,19).replace('T',' '); };
             const dia = (v) => { if (!v) return null; const str = String(v); return str.includes('T') ? str.split('T')[0] : str.slice(0,10); };
