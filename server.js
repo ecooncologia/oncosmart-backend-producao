@@ -1587,6 +1587,102 @@ app.post('/biblioteca/reservar', async (req, res) => {
     }
 });
 
+// ============================================================================
+// 💊 COMPRAS DE MEDICAMENTOS — solicitadas no Estoque Tasy, tratadas pela Farmácia
+// ============================================================================
+
+// Destinatários de um aviso: quem tem a permissão indicada no cadastro de usuários.
+async function emailsPorPermissao(chave) {
+    try {
+        const [rows] = await pool.query("SELECT email, nome, permissoes FROM usuarios");
+        const lista = [];
+        rows.forEach(u => {
+            if (!u.email || !String(u.email).includes('@')) return;
+            let p = {};
+            try { p = (typeof u.permissoes === 'string') ? JSON.parse(u.permissoes || '{}') : (u.permissoes || {}); } catch (e) {}
+            if (p && p[chave] === true) lista.push(String(u.email).trim());
+        });
+        return [...new Set(lista)];
+    } catch (e) {
+        console.warn('⚠️ [Compras Med] Falha ao listar destinatários:', e.message);
+        return [];
+    }
+}
+
+async function garantirTabelaComprasMed() {
+    await pool.query(`CREATE TABLE IF NOT EXISTS compras_medicamentos (
+        id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(120) UNIQUE,
+        medicamento VARCHAR(500), cd_material VARCHAR(60),
+        quantidade DECIMAL(12,2), unidade VARCHAR(30),
+        observacao TEXT, solicitante VARCHAR(255), solicitante_email VARCHAR(255),
+        status VARCHAR(20), data_solicitacao DATETIME, data_compra DATETIME,
+        comprado_por VARCHAR(255), dados_extras JSON)`);
+}
+
+// Quantidade de solicitações em aberto — alimenta o pop-up de quem cuida da fila.
+app.get('/compras_medicamentos/pendentes', async (req, res) => {
+    try {
+        await garantirTabelaComprasMed();
+        const [r] = await pool.query("SELECT COUNT(*) AS n FROM compras_medicamentos WHERE status = 'pendente'");
+        res.json({ pendentes: r[0] ? r[0].n : 0 });
+    } catch (e) {
+        console.error('[Compras Med] Erro ao contar pendentes:', e.message);
+        res.json({ pendentes: 0 });
+    }
+});
+
+app.post('/compras_medicamentos/notificar', async (req, res) => {
+    try {
+        const { tipo, solicitacao } = req.body || {};
+        if (!tipo || !solicitacao) return res.status(400).json({ erro: 'Campos tipo e solicitacao são obrigatórios.' });
+
+        const agora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+        const qtd = `${solicitacao.quantidade || '?'} ${solicitacao.unidade || ''}`.trim();
+        // nova solicitação avisa a Farmácia; a compra efetivada avisa quem pediu, no Estoque Tasy
+        const permissaoAlvo = tipo === 'comprado' ? 'estoque_tasy' : 'compras_medicamentos';
+        const destinos = await emailsPorPermissao(permissaoAlvo);
+
+        if (!destinos.length) {
+            console.warn(`⚠️ [Compras Med] Ninguém com a permissão ${permissaoAlvo} — aviso ignorado.`);
+            return res.json({ sucesso: true, aviso: `Nenhum usuário com a permissão ${permissaoAlvo}.` });
+        }
+
+        const cor = tipo === 'comprado' ? '#00855B' : '#0284c7';
+        const titulo = tipo === 'comprado' ? '✅ Medicamento comprado' : '💊 Nova solicitação de medicamento';
+        const linha = (r, v) => `<tr><td style="padding:7px 0;color:#64748b;font-size:13px;">${r}</td><td style="padding:7px 0;color:#0f172a;font-size:13px;font-weight:600;">${v || '—'}</td></tr>`;
+
+        await transporter.sendMail({
+            from: `"Onco Smart — Farmácia" <${process.env.EMAIL_USER}>`,
+            to: destinos.join(','),
+            subject: `${titulo} — ${solicitacao.medicamento || 'Medicamento'}`,
+            html: `
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+                <div style="background:${cor};padding:20px 24px;color:#fff;font-size:18px;font-weight:800;">${titulo}</div>
+                <div style="padding:22px 24px;">
+                    <table style="width:100%;border-collapse:collapse;">
+                        ${linha('Medicamento', solicitacao.medicamento)}
+                        ${linha('Quantidade', qtd)}
+                        ${linha('Solicitado por', solicitacao.solicitante)}
+                        ${linha(tipo === 'comprado' ? 'Comprado por' : 'Observação',
+                                tipo === 'comprado' ? solicitacao.comprado_por : solicitacao.observacao)}
+                    </table>
+                    <p style="margin:18px 0 0;font-size:13px;color:#475569;">
+                        ${tipo === 'comprado'
+                            ? 'A compra foi registrada pela Farmácia. O item deve chegar conforme o prazo do fornecedor.'
+                            : 'A solicitação está na fila de <b>Compras de Medicamentos</b>, aguardando a Farmácia.'}
+                    </p>
+                </div>
+                <div style="background:#f8fafc;padding:14px 24px;font-size:11px;color:#94a3b8;border-top:1px solid #e2e8f0;">Enviado automaticamente pelo Onco Smart · ${agora}</div>
+            </div>`
+        });
+
+        res.json({ sucesso: true, enviados: destinos.length });
+    } catch (e) {
+        console.error('[Compras Med] Erro ao notificar:', e.message);
+        res.status(500).json({ erro: e.message });
+    }
+});
+
 app.get('/:tabela', async (req, res, next) => {
     const { tabela } = req.params;
     if (tabela === 'custos_oracle') return next();
@@ -2154,6 +2250,20 @@ async function handleSave(req, res, next) {
                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                  ON DUPLICATE KEY UPDATE livro_id=VALUES(livro_id), livro_titulo=VALUES(livro_titulo), solicitante=VALUES(solicitante), telefone=VALUES(telefone), tipo_solicitante=VALUES(tipo_solicitante), origem=VALUES(origem), status=VALUES(status), data_reserva=COALESCE(VALUES(data_reserva), data_reserva), data_retirada=VALUES(data_retirada), data_prevista=VALUES(data_prevista), data_devolucao=VALUES(data_devolucao), observacao=VALUES(observacao), dados_extras=JSON_MERGE_PATCH(COALESCE(dados_extras,'{}'), ?)`,
                 [finalId, d.livro_id||null, d.livro_titulo||null, d.solicitante||null, d.telefone||null, d.tipo_solicitante||null, d.origem||'interno', d.status||'reservado', dt(d.data_reserva) || dt(new Date()), dt(d.data_retirada), dia(d.data_prevista), dt(d.data_devolucao), d.observacao||null, JSON.stringify(d), JSON.stringify(d)]
+            );
+        }
+        else if (tabela === 'compras_medicamentos') {
+            await garantirTabelaComprasMed();
+            const d = dados;
+            const dt = (v) => { if (!v) return null; const x = new Date(v); return isNaN(x) ? null : x.toISOString().slice(0,19).replace('T',' '); };
+            await pool.query(
+                `INSERT INTO compras_medicamentos (id_firebase, medicamento, cd_material, quantidade, unidade, observacao, solicitante, solicitante_email, status, data_solicitacao, data_compra, comprado_por, dados_extras)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE medicamento=VALUES(medicamento), cd_material=VALUES(cd_material), quantidade=VALUES(quantidade), unidade=VALUES(unidade), observacao=VALUES(observacao), solicitante=VALUES(solicitante), solicitante_email=VALUES(solicitante_email), status=VALUES(status), data_solicitacao=COALESCE(VALUES(data_solicitacao), data_solicitacao), data_compra=VALUES(data_compra), comprado_por=VALUES(comprado_por), dados_extras=JSON_MERGE_PATCH(COALESCE(dados_extras,'{}'), ?)`,
+                [finalId, d.medicamento||null, d.cd_material||null, parseFloat(d.quantidade)||0, d.unidade||'un', d.observacao||null,
+                 d.solicitante||null, d.solicitante_email||null, d.status||'pendente',
+                 dt(d.data_solicitacao) || dt(new Date()), dt(d.data_compra), d.comprado_por||null,
+                 JSON.stringify(d), JSON.stringify(d)]
             );
         }
         else {
