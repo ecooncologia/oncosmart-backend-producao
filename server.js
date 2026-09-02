@@ -1615,8 +1615,11 @@ async function garantirTabelaComprasMed() {
         medicamento VARCHAR(500), cd_material VARCHAR(60),
         quantidade DECIMAL(12,2), unidade VARCHAR(30),
         observacao TEXT, solicitante VARCHAR(255), solicitante_email VARCHAR(255),
+        pedido_id VARCHAR(120),
         status VARCHAR(20), data_solicitacao DATETIME, data_compra DATETIME,
         comprado_por VARCHAR(255), dados_extras JSON)`);
+    // tabela criada antes do carrinho nao tem a coluna; ALTER duplicado e ignorado
+    try { await pool.query('ALTER TABLE compras_medicamentos ADD COLUMN pedido_id VARCHAR(120)'); } catch (e) {}
 }
 
 // Solicitações em aberto — alimenta o pop-up de quem cuida da fila. Devolve também
@@ -1640,9 +1643,14 @@ app.get('/compras_medicamentos/pendentes', async (req, res) => {
 
 app.post('/compras_medicamentos/notificar', async (req, res) => {
     try {
-        const { tipo, solicitacao } = req.body || {};
-        if (!tipo || !solicitacao) return res.status(400).json({ erro: 'Campos tipo e solicitacao são obrigatórios.' });
+        const { tipo } = req.body || {};
+        // Aceita um item (compra efetivada) ou uma lista (pedido do carrinho, um e-mail so).
+        const lista = Array.isArray(req.body && req.body.solicitacoes) && req.body.solicitacoes.length
+            ? req.body.solicitacoes
+            : ((req.body && req.body.solicitacao) ? [req.body.solicitacao] : []);
+        if (!tipo || !lista.length) return res.status(400).json({ erro: 'Campos tipo e solicitacao/solicitacoes são obrigatórios.' });
 
+        const solicitacao = lista[0];
         const agora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
         const qtd = `${solicitacao.quantidade || '?'} ${solicitacao.unidade || ''}`.trim();
         // nova solicitação avisa a Farmácia; a compra efetivada avisa quem pediu, no Estoque Tasy
@@ -1655,20 +1663,37 @@ app.post('/compras_medicamentos/notificar', async (req, res) => {
         }
 
         const cor = tipo === 'comprado' ? '#00855B' : '#0284c7';
-        const titulo = tipo === 'comprado' ? '✅ Medicamento comprado' : '💊 Nova solicitação de medicamento';
+        const varios = lista.length > 1;
+        const titulo = tipo === 'comprado'
+            ? '✅ Medicamento comprado'
+            : (varios ? `💊 Nova solicitação — ${lista.length} medicamentos` : '💊 Nova solicitação de medicamento');
+
+        // Com vários itens, o corpo vira uma tabela em vez de repetir o bloco de um item.
+        const tabelaItens = varios ? `
+            <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
+                <tr>
+                    <th style="text-align:left;padding:7px 0;font-size:11px;color:#94a3b8;text-transform:uppercase;">Medicamento</th>
+                    <th style="text-align:right;padding:7px 0;font-size:11px;color:#94a3b8;text-transform:uppercase;">Quantidade</th>
+                </tr>
+                ${lista.map(i => `<tr>
+                    <td style="padding:8px 0;border-top:1px solid #f1f5f9;font-size:13px;color:#0f172a;font-weight:600;">${i.medicamento || '—'}${i.cd_material ? ` <span style="color:#94a3b8;font-weight:400;">${i.cd_material}</span>` : ''}</td>
+                    <td style="padding:8px 0;border-top:1px solid #f1f5f9;font-size:13px;color:#475569;text-align:right;white-space:nowrap;">${i.quantidade || ''} ${i.unidade || ''}</td>
+                </tr>`).join('')}
+            </table>` : '';
         const linha = (r, v) => `<tr><td style="padding:7px 0;color:#64748b;font-size:13px;">${r}</td><td style="padding:7px 0;color:#0f172a;font-size:13px;font-weight:600;">${v || '—'}</td></tr>`;
 
         await transporter.sendMail({
             from: `"Onco Smart — Farmácia" <${process.env.EMAIL_USER}>`,
             to: destinos.join(','),
-            subject: `${titulo} — ${solicitacao.medicamento || 'Medicamento'}`,
+            subject: varios ? titulo : `${titulo} — ${solicitacao.medicamento || 'Medicamento'}`,
             html: `
             <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
                 <div style="background:${cor};padding:20px 24px;color:#fff;font-size:18px;font-weight:800;">${titulo}</div>
                 <div style="padding:22px 24px;">
+                    ${tabelaItens}
                     <table style="width:100%;border-collapse:collapse;">
-                        ${linha('Medicamento', solicitacao.medicamento)}
-                        ${linha('Quantidade', qtd)}
+                        ${varios ? '' : linha('Medicamento', solicitacao.medicamento)}
+                        ${varios ? '' : linha('Quantidade', qtd)}
                         ${linha('Solicitado por', solicitacao.solicitante)}
                         ${linha(tipo === 'comprado' ? 'Comprado por' : 'Observação',
                                 tipo === 'comprado' ? solicitacao.comprado_por : solicitacao.observacao)}
@@ -2264,10 +2289,10 @@ async function handleSave(req, res, next) {
             const d = dados;
             const dt = (v) => { if (!v) return null; const x = new Date(v); return isNaN(x) ? null : x.toISOString().slice(0,19).replace('T',' '); };
             await pool.query(
-                `INSERT INTO compras_medicamentos (id_firebase, medicamento, cd_material, quantidade, unidade, observacao, solicitante, solicitante_email, status, data_solicitacao, data_compra, comprado_por, dados_extras)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                 ON DUPLICATE KEY UPDATE medicamento=VALUES(medicamento), cd_material=VALUES(cd_material), quantidade=VALUES(quantidade), unidade=VALUES(unidade), observacao=VALUES(observacao), solicitante=VALUES(solicitante), solicitante_email=VALUES(solicitante_email), status=VALUES(status), data_solicitacao=COALESCE(VALUES(data_solicitacao), data_solicitacao), data_compra=VALUES(data_compra), comprado_por=VALUES(comprado_por), dados_extras=JSON_MERGE_PATCH(COALESCE(dados_extras,'{}'), ?)`,
-                [finalId, d.medicamento||null, d.cd_material||null, parseFloat(d.quantidade)||0, d.unidade||'un', d.observacao||null,
+                `INSERT INTO compras_medicamentos (id_firebase, pedido_id, medicamento, cd_material, quantidade, unidade, observacao, solicitante, solicitante_email, status, data_solicitacao, data_compra, comprado_por, dados_extras)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE pedido_id=VALUES(pedido_id), medicamento=VALUES(medicamento), cd_material=VALUES(cd_material), quantidade=VALUES(quantidade), unidade=VALUES(unidade), observacao=VALUES(observacao), solicitante=VALUES(solicitante), solicitante_email=VALUES(solicitante_email), status=VALUES(status), data_solicitacao=COALESCE(VALUES(data_solicitacao), data_solicitacao), data_compra=VALUES(data_compra), comprado_por=VALUES(comprado_por), dados_extras=JSON_MERGE_PATCH(COALESCE(dados_extras,'{}'), ?)`,
+                [finalId, d.pedido_id||null, d.medicamento||null, d.cd_material||null, parseFloat(d.quantidade)||0, d.unidade||'un', d.observacao||null,
                  d.solicitante||null, d.solicitante_email||null, d.status||'pendente',
                  dt(d.data_solicitacao) || dt(new Date()), dt(d.data_compra), d.comprado_por||null,
                  JSON.stringify(d), JSON.stringify(d)]
