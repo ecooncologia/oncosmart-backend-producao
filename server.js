@@ -1618,8 +1618,26 @@ async function garantirTabelaComprasMed() {
         pedido_id VARCHAR(120),
         status VARCHAR(20), data_solicitacao DATETIME, data_compra DATETIME,
         comprado_por VARCHAR(255), dados_extras JSON)`);
-    // tabela criada antes do carrinho nao tem a coluna; ALTER duplicado e ignorado
-    try { await pool.query('ALTER TABLE compras_medicamentos ADD COLUMN pedido_id VARCHAR(120)'); } catch (e) {}
+    await garantirColunasComprasMed();
+}
+
+// A tabela pode ter nascido no formato generico (so id_firebase + dados_extras), quando o
+// front gravou antes deste handler existir — foi o que aconteceu em producao em 02/09/2026.
+// CREATE TABLE IF NOT EXISTS nao corrige tabela existente, entao garantimos coluna a coluna.
+// ALTER duplicado e ignorado; roda uma vez por processo.
+let _colunasComprasMedOk = false;
+async function garantirColunasComprasMed() {
+    if (_colunasComprasMedOk) return;
+    const colunas = [
+        'pedido_id VARCHAR(120)', 'medicamento VARCHAR(500)', 'cd_material VARCHAR(60)',
+        'quantidade DECIMAL(12,2)', 'unidade VARCHAR(30)', 'observacao TEXT',
+        'solicitante VARCHAR(255)', 'solicitante_email VARCHAR(255)', 'status VARCHAR(20)',
+        'data_solicitacao DATETIME', 'data_compra DATETIME', 'comprado_por VARCHAR(255)'
+    ];
+    for (const col of colunas) {
+        try { await pool.query(`ALTER TABLE compras_medicamentos ADD COLUMN ${col}`); } catch (e) {}
+    }
+    _colunasComprasMedOk = true;
 }
 
 // Solicitações em aberto — alimenta o pop-up de quem cuida da fila. Devolve também
