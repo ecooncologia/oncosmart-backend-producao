@@ -1619,15 +1619,22 @@ async function garantirTabelaComprasMed() {
         comprado_por VARCHAR(255), dados_extras JSON)`);
 }
 
-// Quantidade de solicitações em aberto — alimenta o pop-up de quem cuida da fila.
+// Solicitações em aberto — alimenta o pop-up de quem cuida da fila. Devolve também
+// os últimos medicamentos pedidos, para o aviso dizer O QUE foi solicitado em vez
+// de só um número.
 app.get('/compras_medicamentos/pendentes', async (req, res) => {
     try {
         await garantirTabelaComprasMed();
         const [r] = await pool.query("SELECT COUNT(*) AS n FROM compras_medicamentos WHERE status = 'pendente'");
-        res.json({ pendentes: r[0] ? r[0].n : 0 });
+        const [itens] = await pool.query(
+            `SELECT medicamento, quantidade, unidade, solicitante, data_solicitacao
+             FROM compras_medicamentos WHERE status = 'pendente'
+             ORDER BY data_solicitacao DESC LIMIT 5`
+        );
+        res.json({ pendentes: r[0] ? r[0].n : 0, itens: itens || [] });
     } catch (e) {
         console.error('[Compras Med] Erro ao contar pendentes:', e.message);
-        res.json({ pendentes: 0 });
+        res.json({ pendentes: 0, itens: [] });
     }
 });
 
