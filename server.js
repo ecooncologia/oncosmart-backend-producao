@@ -2029,6 +2029,21 @@ async function garantirColunasChecklistFin() {
     _colunasChecklistFinOk = true;
 }
 
+let _colunasChecklistTarefasOk = false;
+async function garantirColunasChecklistTarefas() {
+    if (_colunasChecklistTarefasOk) return;
+    const colunas = [
+        'competencia VARCHAR(7)', 'grupo_id VARCHAR(120)', 'grupo_nome VARCHAR(255)',
+        'ordem_grupo INT DEFAULT 0', 'titulo VARCHAR(500)', 'ordem INT DEFAULT 0',
+        'concluido TINYINT(1) DEFAULT 0', 'concluido_por VARCHAR(255)',
+        'data_conclusao DATETIME', 'serie_id VARCHAR(120)'
+    ];
+    for (const col of colunas) {
+        try { await pool.query(`ALTER TABLE checklist_fin_tarefas ADD COLUMN ${col}`); } catch (e) {}
+    }
+    _colunasChecklistTarefasOk = true;
+}
+
 async function handleSave(req, res, next) {
     const { tabela, id } = req.params;
     if (tabela === 'custos_oracle') return next();
@@ -2332,6 +2347,28 @@ async function handleSave(req, res, next) {
                  d.solicitante||null, d.solicitante_email||null, d.status||'pendente',
                  dt(d.data_solicitacao) || dt(new Date()), dt(d.data_compra), d.comprado_por||null,
                  JSON.stringify(d), JSON.stringify(d)]
+            );
+        }
+        else if (tabela === 'checklist_fin_tarefas') {
+            // Itens do checklist de documentos do mes, agrupados (Documentos impressos,
+            // digitais...). Cada mes tem suas proprias linhas; serie_id liga o mesmo item
+            // entre os meses, para dar para apagar de todos de uma vez.
+            await pool.query(`CREATE TABLE IF NOT EXISTS checklist_fin_tarefas (
+                id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(120) UNIQUE,
+                competencia VARCHAR(7), grupo_id VARCHAR(120), grupo_nome VARCHAR(255),
+                ordem_grupo INT DEFAULT 0, titulo VARCHAR(500), ordem INT DEFAULT 0,
+                concluido TINYINT(1) DEFAULT 0, concluido_por VARCHAR(255), data_conclusao DATETIME,
+                serie_id VARCHAR(120), dados_extras JSON)`);
+            await garantirColunasChecklistTarefas();
+            const d = dados;
+            const dt = (v) => { if (!v) return null; const x = new Date(v); return isNaN(x) ? null : x.toISOString().slice(0,19).replace('T',' '); };
+            await pool.query(
+                `INSERT INTO checklist_fin_tarefas (id_firebase, competencia, grupo_id, grupo_nome, ordem_grupo, titulo, ordem, concluido, concluido_por, data_conclusao, serie_id, dados_extras)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE competencia=VALUES(competencia), grupo_id=VALUES(grupo_id), grupo_nome=VALUES(grupo_nome), ordem_grupo=VALUES(ordem_grupo), titulo=VALUES(titulo), ordem=VALUES(ordem), concluido=VALUES(concluido), concluido_por=VALUES(concluido_por), data_conclusao=VALUES(data_conclusao), serie_id=VALUES(serie_id), dados_extras=JSON_MERGE_PATCH(COALESCE(dados_extras,'{}'), ?)`,
+                [finalId, d.competencia||null, d.grupo_id||null, d.grupo_nome||null, parseInt(d.ordem_grupo)||0,
+                 d.titulo||null, parseInt(d.ordem)||0, d.concluido ? 1 : 0, d.concluido_por||null,
+                 dt(d.data_conclusao), d.serie_id||null, JSON.stringify(d), JSON.stringify(d)]
             );
         }
         else if (tabela === 'checklist_financeiro') {
