@@ -2011,6 +2011,24 @@ async function garantirColunasBiblioteca(pool) {
     _bibliotecaMigrada = true;
 }
 
+// Mesma protecao das outras tabelas novas: se ela nasceu no formato generico
+// (so id_firebase + dados_extras), CREATE TABLE IF NOT EXISTS nao corrige.
+let _colunasChecklistFinOk = false;
+async function garantirColunasChecklistFin() {
+    if (_colunasChecklistFinOk) return;
+    const colunas = [
+        'servico VARCHAR(300)', 'categoria VARCHAR(120)', 'tipo VARCHAR(20)',
+        'competencia VARCHAR(7)', 'vencimento DATE', 'valor DECIMAL(12,2)',
+        'valor_pago DECIMAL(12,2)', 'status VARCHAR(20)', 'forma_pagamento VARCHAR(60)',
+        'fornecedor VARCHAR(255)', 'observacao TEXT', 'data_pagamento DATETIME',
+        'pago_por VARCHAR(255)', 'recorrente TINYINT(1) DEFAULT 0', 'grupo_fixo VARCHAR(120)'
+    ];
+    for (const col of colunas) {
+        try { await pool.query(`ALTER TABLE checklist_financeiro ADD COLUMN ${col}`); } catch (e) {}
+    }
+    _colunasChecklistFinOk = true;
+}
+
 async function handleSave(req, res, next) {
     const { tabela, id } = req.params;
     if (tabela === 'custos_oracle') return next();
@@ -2313,6 +2331,32 @@ async function handleSave(req, res, next) {
                 [finalId, d.pedido_id||null, d.medicamento||null, d.cd_material||null, parseFloat(d.quantidade)||0, d.unidade||'un', d.observacao||null,
                  d.solicitante||null, d.solicitante_email||null, d.status||'pendente',
                  dt(d.data_solicitacao) || dt(new Date()), dt(d.data_compra), d.comprado_por||null,
+                 JSON.stringify(d), JSON.stringify(d)]
+            );
+        }
+        else if (tabela === 'checklist_financeiro') {
+            // Despesas do checklist: cada campo em coluna propria (+ dados_extras).
+            await pool.query(`CREATE TABLE IF NOT EXISTS checklist_financeiro (
+                id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(120) UNIQUE,
+                servico VARCHAR(300), categoria VARCHAR(120), tipo VARCHAR(20),
+                competencia VARCHAR(7), vencimento DATE, valor DECIMAL(12,2),
+                valor_pago DECIMAL(12,2), status VARCHAR(20), forma_pagamento VARCHAR(60),
+                fornecedor VARCHAR(255), observacao TEXT,
+                data_pagamento DATETIME, pago_por VARCHAR(255),
+                recorrente TINYINT(1) DEFAULT 0, grupo_fixo VARCHAR(120),
+                dados_extras JSON)`);
+            await garantirColunasChecklistFin();
+            const d = dados;
+            const dia = (v) => { if (!v) return null; const t = String(v); return t.includes('T') ? t.split('T')[0] : t.slice(0,10); };
+            const dt  = (v) => { if (!v) return null; const x = new Date(v); return isNaN(x) ? null : x.toISOString().slice(0,19).replace('T',' '); };
+            await pool.query(
+                `INSERT INTO checklist_financeiro (id_firebase, servico, categoria, tipo, competencia, vencimento, valor, valor_pago, status, forma_pagamento, fornecedor, observacao, data_pagamento, pago_por, recorrente, grupo_fixo, dados_extras)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE servico=VALUES(servico), categoria=VALUES(categoria), tipo=VALUES(tipo), competencia=VALUES(competencia), vencimento=VALUES(vencimento), valor=VALUES(valor), valor_pago=VALUES(valor_pago), status=VALUES(status), forma_pagamento=VALUES(forma_pagamento), fornecedor=VALUES(fornecedor), observacao=VALUES(observacao), data_pagamento=VALUES(data_pagamento), pago_por=VALUES(pago_por), recorrente=VALUES(recorrente), grupo_fixo=VALUES(grupo_fixo), dados_extras=JSON_MERGE_PATCH(COALESCE(dados_extras,'{}'), ?)`,
+                [finalId, d.servico||null, d.categoria||null, d.tipo||'fixa', d.competencia||null, dia(d.vencimento),
+                 parseFloat(d.valor)||0, d.valor_pago == null ? null : (parseFloat(d.valor_pago)||0),
+                 d.status||'pendente', d.forma_pagamento||null, d.fornecedor||null, d.observacao||null,
+                 dt(d.data_pagamento), d.pago_por||null, d.recorrente ? 1 : 0, d.grupo_fixo||null,
                  JSON.stringify(d), JSON.stringify(d)]
             );
         }
