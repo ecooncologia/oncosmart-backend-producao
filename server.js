@@ -1733,6 +1733,41 @@ app.post('/compras_medicamentos/notificar', async (req, res) => {
     }
 });
 
+// Contas pendentes vencendo (ou ja vencidas) — alimenta o aviso de quem cuida do
+// Checklist Financeiro. Janela padrao de 3 dias, contada em data, nao em horas.
+app.get('/checklist_financeiro/vencendo', async (req, res) => {
+    try {
+        const dias = Math.min(30, Math.max(0, parseInt(req.query.dias) || 3));
+        try { await pool.query('SELECT 1 FROM checklist_financeiro LIMIT 1'); }
+        catch (e) { if (e.code === 'ER_NO_SUCH_TABLE') return res.json({ vencidas: [], vencendo: [] }); throw e; }
+
+        const [rows] = await pool.query(
+            `SELECT id_firebase, servico, fornecedor, vencimento, valor
+             FROM checklist_financeiro
+             WHERE (status IS NULL OR status <> 'pago')
+               AND vencimento IS NOT NULL
+               AND vencimento <= DATE_ADD(CURDATE(), INTERVAL ? DAY)
+             ORDER BY vencimento ASC, valor DESC
+             LIMIT 50`, [dias]);
+
+        const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+        const vencidas = [], vencendo = [];
+        rows.forEach(r => {
+            const iso = r.vencimento instanceof Date
+                ? r.vencimento.toISOString().slice(0, 10)
+                : String(r.vencimento).slice(0, 10);
+            const item = { ...r, vencimento: iso };
+            const d = new Date(iso + 'T00:00:00');
+            (d < hoje ? vencidas : vencendo).push(item);
+        });
+
+        res.json({ vencidas, vencendo });
+    } catch (e) {
+        console.error('[Checklist Fin] Erro ao buscar vencimentos:', e.message);
+        res.json({ vencidas: [], vencendo: [] });
+    }
+});
+
 app.get('/:tabela', async (req, res, next) => {
     const { tabela } = req.params;
     if (tabela === 'custos_oracle') return next();
