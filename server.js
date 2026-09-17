@@ -1768,6 +1768,91 @@ app.get('/checklist_financeiro/vencendo', async (req, res) => {
     }
 });
 
+// Agendas de honorarios que pedem aviso — alimenta o pop-up de quem tem a permissao
+// da aba Honorarios. A agenda entra na lista N dias antes (padrao 2) e so sai quando
+// for marcada como paga: se a data passar sem pagamento, continua avisando como
+// atrasada. As agendas ficam num JSON por registro, entao o filtro e feito aqui,
+// contado em dia e nao em horas.
+app.get('/honorarios/agendas_proximas', async (req, res) => {
+    try {
+        const dias = Math.min(30, Math.max(0, parseInt(req.query.dias) || 2));
+        let rows;
+        try { [rows] = await pool.query('SELECT id_firebase, paciente, medico, procedimento, agendas, dados_extras FROM honorarios'); }
+        catch (e) { if (e.code === 'ER_NO_SUCH_TABLE' || e.code === 'ER_BAD_FIELD_ERROR') return res.json({ agendas: [] }); throw e; }
+
+        const hojeSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+        hojeSP.setHours(0, 0, 0, 0);
+
+        const lista = [];
+        rows.forEach(r => {
+            let extras = {};
+            try { extras = typeof r.dados_extras === 'string' ? JSON.parse(r.dados_extras || '{}') : (r.dados_extras || {}); } catch (e) {}
+            const statusHon = String(extras.status || '').toLowerCase();
+            if (statusHon === 'cancelado' || statusHon === 'pago') return;
+
+            let agendas = extras.agendas;
+            if (!Array.isArray(agendas)) {
+                try { agendas = typeof r.agendas === 'string' ? JSON.parse(r.agendas || '[]') : (r.agendas || []); } catch (e) { agendas = []; }
+            }
+
+            (agendas || []).forEach(a => {
+                const iso = String((a && a.data) || '').slice(0, 10);
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return;
+                const d = new Date(iso + 'T00:00:00');
+                const diff = Math.round((d - hojeSP) / 86400000);
+                if (a.pago) return;              // pago sai do aviso
+                if (diff > dias) return;         // ainda longe; atrasada (diff < 0) continua
+                lista.push({
+                    id_firebase: r.id_firebase,
+                    paciente: r.paciente || extras.paciente || '',
+                    medico: r.medico || extras.medico || '',
+                    procedimento: r.procedimento || extras.procedimento || '',
+                    data: iso, hora: (a && a.hora) || '', descricao: (a && a.descricao) || '',
+                    parcela: (a && a.parcela) || null, total: (a && a.total) || null, pago: !!(a && a.pago),
+                    dias: diff
+                });
+            });
+        });
+
+        lista.sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
+        res.json({ agendas: lista.slice(0, 100) });
+    } catch (e) {
+        console.error('[Honorarios] Erro ao buscar agendas proximas:', e.message);
+        res.json({ agendas: [] });
+    }
+});
+
+// Comprovantes das agendas de honorarios. Ficam numa tabela propria, fora do
+// registro do honorario: base64 dentro da listagem deixa a tela pesada (foi o que
+// aconteceu com os anexos das guias). A listagem devolve so os metadados; o arquivo
+// vem sob demanda, por id.
+app.get('/honorarios_comprovantes', async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT id_firebase, honorario_id, agenda_id, nome_arquivo, tipo, data_upload, enviado_por FROM honorarios_comprovantes');
+        const out = {};
+        rows.forEach(r => { out[r.id_firebase] = r; });
+        res.json(out);
+    } catch (e) {
+        if (e.code === 'ER_NO_SUCH_TABLE' || e.code === 'ER_BAD_FIELD_ERROR') return res.json({});
+        console.error('[Honorarios] Erro ao listar comprovantes:', e.message);
+        res.status(500).json({ error: 'Erro interno.' });
+    }
+});
+
+app.get('/honorarios_comprovantes/:id', async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            'SELECT id_firebase, honorario_id, agenda_id, nome_arquivo, tipo, arquivo, data_upload, enviado_por FROM honorarios_comprovantes WHERE id_firebase = ? LIMIT 1',
+            [req.params.id]);
+        if (!rows.length) return res.status(404).json({ error: 'Comprovante não encontrado.' });
+        res.json(rows[0]);
+    } catch (e) {
+        if (e.code === 'ER_NO_SUCH_TABLE' || e.code === 'ER_BAD_FIELD_ERROR') return res.status(404).json({ error: 'Comprovante não encontrado.' });
+        console.error('[Honorarios] Erro ao buscar comprovante:', e.message);
+        res.status(500).json({ error: 'Erro interno.' });
+    }
+});
+
 app.get('/:tabela', async (req, res, next) => {
     const { tabela } = req.params;
     if (tabela === 'custos_oracle') return next();
@@ -2062,6 +2147,51 @@ async function garantirColunasChecklistFin() {
         try { await pool.query(`ALTER TABLE checklist_financeiro ADD COLUMN ${col}`); } catch (e) {}
     }
     _colunasChecklistFinOk = true;
+}
+
+// Honorarios da aba de Particulares: tabela nova, com a mesma protecao das outras
+// (se nasceu no formato generico, CREATE TABLE IF NOT EXISTS nao cria as colunas).
+let _colunasHonorariosOk = false;
+async function garantirColunasHonorarios() {
+    if (_colunasHonorariosOk) return;
+    const colunas = [
+        'paciente VARCHAR(255)', 'medico_id VARCHAR(120)', 'medico VARCHAR(255)',
+        'procedimento VARCHAR(300)', 'valor DECIMAL(12,2)', 'forma_pagamento VARCHAR(60)',
+        'status VARCHAR(20)', 'data_pagamento DATE', 'agendas TEXT', 'observacao TEXT',
+        'criado_por VARCHAR(255)', 'data_cadastro DATETIME'
+    ];
+    for (const col of colunas) {
+        try { await pool.query(`ALTER TABLE honorarios ADD COLUMN ${col}`); } catch (e) {}
+    }
+    _colunasHonorariosOk = true;
+}
+
+let _colunasHonComprovantesOk = false;
+async function garantirColunasHonComprovantes() {
+    if (_colunasHonComprovantesOk) return;
+    const colunas = [
+        'honorario_id VARCHAR(120)', 'agenda_id VARCHAR(120)', 'nome_arquivo VARCHAR(255)',
+        'tipo VARCHAR(120)', 'arquivo LONGTEXT', 'data_upload DATETIME', 'enviado_por VARCHAR(255)'
+    ];
+    for (const col of colunas) {
+        try { await pool.query(`ALTER TABLE honorarios_comprovantes ADD COLUMN ${col}`); } catch (e) {}
+    }
+    _colunasHonComprovantesOk = true;
+}
+
+// Congelamento do Dashboard Repasse: um registro por competencia (AAAA-MM) com o
+// valor de cada medico naquele mes.
+let _colunasRepasseCongeladoOk = false;
+async function garantirColunasRepasseCongelado() {
+    if (_colunasRepasseCongeladoOk) return;
+    const colunas = [
+        'competencia VARCHAR(7)', 'valores LONGTEXT', 'total_geral DECIMAL(14,2)',
+        'qtd_medicos INT', 'congelado_em DATETIME', 'congelado_por VARCHAR(255)'
+    ];
+    for (const col of colunas) {
+        try { await pool.query(`ALTER TABLE repasse_congelado ADD COLUMN ${col}`); } catch (e) {}
+    }
+    _colunasRepasseCongeladoOk = true;
 }
 
 let _colunasChecklistTarefasOk = false;
@@ -2406,6 +2536,68 @@ async function handleSave(req, res, next) {
                  dt(d.data_conclusao), d.serie_id||null, JSON.stringify(d), JSON.stringify(d)]
             );
         }
+        else if (tabela === 'repasse_congelado') {
+            await pool.query(`CREATE TABLE IF NOT EXISTS repasse_congelado (
+                id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(120) UNIQUE,
+                competencia VARCHAR(7), valores LONGTEXT, total_geral DECIMAL(14,2),
+                qtd_medicos INT, congelado_em DATETIME, congelado_por VARCHAR(255),
+                dados_extras JSON)`);
+            await garantirColunasRepasseCongelado();
+            const d = dados;
+            const dt = (v) => { if (!v) return null; const x = new Date(v); return isNaN(x) ? null : x.toISOString().slice(0,19).replace('T',' '); };
+            const valores = d.valores && typeof d.valores === 'object' ? JSON.stringify(d.valores) : (d.valores || '{}');
+            const { valores: _v, ...semValores } = d;   // o mapa fica so na coluna propria
+            await pool.query(
+                `INSERT INTO repasse_congelado (id_firebase, competencia, valores, total_geral, qtd_medicos, congelado_em, congelado_por, dados_extras)
+                 VALUES (?,?,?,?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE competencia=VALUES(competencia), valores=VALUES(valores), total_geral=VALUES(total_geral), qtd_medicos=VALUES(qtd_medicos), congelado_em=VALUES(congelado_em), congelado_por=VALUES(congelado_por), dados_extras=VALUES(dados_extras)`,
+                [finalId, d.competencia || finalId, valores, parseFloat(d.total_geral) || 0,
+                 parseInt(d.qtd_medicos) || 0, dt(d.congelado_em) || dt(new Date()), d.congelado_por || null,
+                 JSON.stringify(semValores)]
+            );
+        }
+        else if (tabela === 'honorarios_comprovantes') {
+            // O arquivo vai so na coluna propria: repetir o base64 em dados_extras dobraria o tamanho.
+            await pool.query(`CREATE TABLE IF NOT EXISTS honorarios_comprovantes (
+                id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(160) UNIQUE,
+                honorario_id VARCHAR(120), agenda_id VARCHAR(120), nome_arquivo VARCHAR(255),
+                tipo VARCHAR(120), arquivo LONGTEXT, data_upload DATETIME, enviado_por VARCHAR(255),
+                dados_extras JSON)`);
+            await garantirColunasHonComprovantes();
+            const d = dados;
+            const dt = (v) => { if (!v) return null; const x = new Date(v); return isNaN(x) ? null : x.toISOString().slice(0,19).replace('T',' '); };
+            const { arquivo, ...semArquivo } = d;
+            await pool.query(
+                `INSERT INTO honorarios_comprovantes (id_firebase, honorario_id, agenda_id, nome_arquivo, tipo, arquivo, data_upload, enviado_por, dados_extras)
+                 VALUES (?,?,?,?,?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE honorario_id=VALUES(honorario_id), agenda_id=VALUES(agenda_id), nome_arquivo=VALUES(nome_arquivo), tipo=VALUES(tipo), arquivo=VALUES(arquivo), data_upload=VALUES(data_upload), enviado_por=VALUES(enviado_por), dados_extras=VALUES(dados_extras)`,
+                [finalId, d.honorario_id||null, d.agenda_id||null, d.nome_arquivo||null, d.tipo||null,
+                 arquivo||null, dt(d.data_upload) || dt(new Date()), d.enviado_por||null, JSON.stringify(semArquivo)]
+            );
+        }
+        else if (tabela === 'honorarios') {
+            await pool.query(`CREATE TABLE IF NOT EXISTS honorarios (
+                id INT AUTO_INCREMENT PRIMARY KEY, id_firebase VARCHAR(120) UNIQUE,
+                paciente VARCHAR(255), medico_id VARCHAR(120), medico VARCHAR(255),
+                procedimento VARCHAR(300), valor DECIMAL(12,2), forma_pagamento VARCHAR(60),
+                status VARCHAR(20), data_pagamento DATE, agendas TEXT, observacao TEXT,
+                criado_por VARCHAR(255), data_cadastro DATETIME,
+                dados_extras JSON)`);
+            await garantirColunasHonorarios();
+            const d = dados;
+            const dia = (v) => { if (!v) return null; const t = String(v); return t.includes('T') ? t.split('T')[0] : t.slice(0,10); };
+            const dt  = (v) => { if (!v) return null; const x = new Date(v); return isNaN(x) ? null : x.toISOString().slice(0,19).replace('T',' '); };
+            const agendas = Array.isArray(d.agendas) ? d.agendas : [];
+            await pool.query(
+                `INSERT INTO honorarios (id_firebase, paciente, medico_id, medico, procedimento, valor, forma_pagamento, status, data_pagamento, agendas, observacao, criado_por, data_cadastro, dados_extras)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE paciente=VALUES(paciente), medico_id=VALUES(medico_id), medico=VALUES(medico), procedimento=VALUES(procedimento), valor=VALUES(valor), forma_pagamento=VALUES(forma_pagamento), status=VALUES(status), data_pagamento=VALUES(data_pagamento), agendas=VALUES(agendas), observacao=VALUES(observacao), dados_extras=JSON_MERGE_PATCH(COALESCE(dados_extras,'{}'), ?)`,
+                [finalId, d.paciente||null, d.medico_id||null, d.medico||null, d.procedimento||null,
+                 parseFloat(d.valor)||0, d.forma_pagamento||null, d.status||'pendente', dia(d.data_pagamento),
+                 JSON.stringify(agendas), d.observacao||null, d.criado_por||null, dt(d.data_cadastro) || dt(new Date()),
+                 JSON.stringify(d), JSON.stringify(d)]
+            );
+        }
         else if (tabela === 'checklist_financeiro') {
             // Despesas do checklist: cada campo em coluna propria (+ dados_extras).
             await pool.query(`CREATE TABLE IF NOT EXISTS checklist_financeiro (
@@ -2699,6 +2891,81 @@ async function enviarResumoPrescricoes() {
         }
     }
 }
+
+// ============================================================================
+// 📚 LEMBRETE DE DEVOLUÇÃO DA BIBLIOTECA (WhatsApp, até 2 dias antes do prazo)
+// ============================================================================
+// Os empréstimos moram na API PHP do HostGator; só este backend alcança o robô do
+// WhatsApp (127.0.0.1:3005). A API devolve quem vence em até 2 dias e ainda não foi
+// avisado para aquele prazo; depois do envio marcamos lá, então reiniciar o servidor
+// ou rodar de hora em hora não repete mensagem.
+const BIBLIOTECA_API_URL = process.env.BIBLIOTECA_API_URL;
+const BIBLIOTECA_TOKEN   = process.env.BIBLIOTECA_TOKEN;
+let _lembreteBibliotecaRodando = false;
+
+function textoLembreteBiblioteca(e) {
+    const primeiroNome = String(e.solicitante || '').trim().split(/\s+/)[0] || '';
+    const [a, m, d] = String(e.data_prevista).split('-');
+    const prazo = e.dias === 0 ? '*hoje*' : e.dias === 1 ? 'falta *1 dia*' : `faltam *${e.dias} dias*`;
+    const frase = e.dias === 0
+        ? `a devolução do livro *${e.livro_titulo}* vence ${prazo} (${d}/${m}/${a}).`
+        : `${prazo} para a devolução do livro *${e.livro_titulo}* (prazo: ${d}/${m}/${a}).`;
+
+    return `📚 *Biblioteca Terapêutica — Eco Oncologia*\n\n` +
+           `Olá${primeiroNome ? ', ' + primeiroNome : ''}! Tudo bem?\n\n` +
+           `Passando para lembrar que ${frase}\n\n` +
+           `Se quiser ficar mais tempo com ele, é só renovar: passe na nossa *Recepção* ` +
+           `ou responda esta mensagem avisando.\n\n` +
+           `Boa leitura! 💚`;
+}
+
+async function verificarLembretesBiblioteca() {
+    if (!BIBLIOTECA_API_URL || !BIBLIOTECA_TOKEN) return;   // ambiente sem biblioteca configurada
+    if (_lembreteBibliotecaRodando) return;
+    _lembreteBibliotecaRodando = true;
+    try {
+        const headers = { 'Content-Type': 'application/json', 'X-Biblioteca-Admin': BIBLIOTECA_TOKEN };
+        const r = await fetch(`${BIBLIOTECA_API_URL}?acao=lembretes_devolucao&t=${Date.now()}`, { headers });
+        if (!r.ok) throw new Error(`API da biblioteca respondeu ${r.status}`);
+        const { emprestimos = [] } = await r.json();
+
+        for (const e of emprestimos) {
+            let numero = String(e.telefone || '').replace(/\D/g, '');
+            if (numero.length === 10 || numero.length === 11) numero = '55' + numero;
+            if (numero.length < 12) {
+                console.warn(`[Biblioteca] Telefone inválido no empréstimo ${e.id_firebase} — lembrete não enviado.`);
+                continue;
+            }
+
+            try {
+                const envio = await fetch('http://127.0.0.1:3005/enviar', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ numero, mensagem: textoLembreteBiblioteca(e) })
+                });
+                if (!envio.ok) throw new Error(`robô respondeu ${envio.status}`);
+
+                // só marca depois de enviado: se o robô falhar, tenta de novo na próxima hora
+                await fetch(`${BIBLIOTECA_API_URL}?acao=marcar_lembrete`, {
+                    method: 'POST', headers, body: JSON.stringify({ id_firebase: e.id_firebase })
+                });
+                console.log(`[Biblioteca] Lembrete de devolução enviado: "${e.livro_titulo}" (${e.dias} dia(s)).`);
+            } catch (err) {
+                console.error(`[Biblioteca] Falha no lembrete do empréstimo ${e.id_firebase}:`, err.message);
+            }
+        }
+    } catch (err) {
+        console.error('[Biblioteca] Erro ao verificar lembretes de devolução:', err.message);
+    } finally {
+        _lembreteBibliotecaRodando = false;
+    }
+}
+
+// De hora em hora, só em horário comercial: ninguém quer lembrete de livro de madrugada
+setInterval(() => {
+    const horaSP = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" })).getHours();
+    if (horaSP >= 9 && horaSP < 18) verificarLembretesBiblioteca();
+}, 60 * 60 * 1000);
 
 // Sem disparo no boot: o envio acontece só às 06h (a guarda persistente cobre
 // o caso de o servidor reiniciar no meio da manhã sem ter enviado ainda)
