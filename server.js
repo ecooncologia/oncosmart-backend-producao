@@ -900,13 +900,15 @@ app.post('/fluxo-unimed/notificar', async (req, res) => {
             const mailAutorizacao = {
                 from: `"Sistema ONCO SMART" <${process.env.EMAIL_USER}>`,
                 to: 'autorizacoes@ecooncologia.com.br',
-                subject: `✅ Guia Autorizada: Paciente ${pacienteNome}`,
+                subject: `✅ Autorizações — Guia Autorizada: Paciente ${pacienteNome}`,
                 html: `
                     <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
-                        <h2 style="color: #059669;">✅ Autorização Unimed Confirmada</h2>
+                        <h2 style="color: #059669;">✅ Autorização Confirmada</h2>
                         <p>A guia do paciente abaixo foi <strong>verificada e autorizada</strong> pelo Nicolas:</p>
                         <table style="border-collapse:collapse; margin:10px 0; width:100%; max-width:500px;">
                             <tr style="background:#f9fafb;"><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Paciente</td><td style="padding:8px 12px; border:1px solid #eee; font-weight:bold; color:#0284c7;">${pacienteNome}</td></tr>
+                            <tr><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Convênio</td><td style="padding:8px 12px; border:1px solid #eee; font-weight:bold;">${(pacienteDados.convenio || 'UNIMED').toUpperCase()}</td></tr>
+                            <tr style="background:#f9fafb;"><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Senha liberada</td><td style="padding:8px 12px; border:1px solid #eee; font-family:monospace; font-size:15px; font-weight:bold; color:#059669;">${pacienteDados.senha_autorizacao || '— não informada —'}</td></tr>
                             <tr><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Carteirinha</td><td style="padding:8px 12px; border:1px solid #eee; font-family:monospace;">${pacienteDados.carteirinha || '-'}</td></tr>
                             <tr style="background:#f9fafb;"><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Protocolo</td><td style="padding:8px 12px; border:1px solid #eee;">${pacienteDados.protocolo || '-'}</td></tr>
                             <tr><td style="padding:8px 12px; font-weight:bold; color:#6b7280; border:1px solid #eee;">Diagnóstico</td><td style="padding:8px 12px; border:1px solid #eee;">${pacienteDados.diagnostico || '-'}</td></tr>
