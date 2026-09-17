@@ -2555,6 +2555,14 @@ async function handleSave(req, res, next) {
                  parseInt(d.qtd_medicos) || 0, dt(d.congelado_em) || dt(new Date()), d.congelado_por || null,
                  JSON.stringify(semValores)]
             );
+
+            // Fica no log do terminal para poder resgatar o fechamento depois, com o
+            // valor de cada medico — o registro no banco guarda so o estado atual.
+            const detalhe = Object.entries(valores && typeof valores === 'string' ? JSON.parse(valores) : (valores || {}))
+                .map(([id, v]) => `${(v && v.nome) || id}=${Number((v && v.total) || 0).toFixed(2)}`).join('; ');
+            console.log(`🔒 [Repasse] Competência ${d.competencia || finalId} FECHADA por ${d.congelado_por || 'desconhecido'} ` +
+                        `em ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })} — ` +
+                        `${parseInt(d.qtd_medicos) || 0} médico(s), total R$ ${(parseFloat(d.total_geral) || 0).toFixed(2)} | ${detalhe}`);
         }
         else if (tabela === 'honorarios_comprovantes') {
             // O arquivo vai so na coluna propria: repetir o base64 em dados_extras dobraria o tamanho.
@@ -2653,6 +2661,18 @@ app.delete('/:tabela/:id', async (req, res) => {
         if (!isNaN(req.params.id)) {
             await pool.query(`DELETE FROM ${tabelaSQL} WHERE id = ? OR id_firebase = ?`, [req.params.id, String(req.params.id)]); 
         } else {
+            if (tabelaSQL === 'repasse_congelado') {
+                // guarda no log o que estava fechado antes de abrir, para poder resgatar
+                try {
+                    const [ant] = await pool.query('SELECT competencia, total_geral, qtd_medicos, congelado_por, congelado_em, valores FROM repasse_congelado WHERE id_firebase = ?', [req.params.id]);
+                    if (ant.length) {
+                        const a = ant[0];
+                        console.log(`🔓 [Repasse] Competência ${a.competencia} REABERTA por ${req.get('X-Usuario') || 'desconhecido'} ` +
+                                    `em ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })} — estava fechada por ${a.congelado_por || 'desconhecido'} ` +
+                                    `(${a.qtd_medicos} médico(s), total R$ ${Number(a.total_geral || 0).toFixed(2)}) | valores: ${a.valores}`);
+                    }
+                } catch (e) { console.error('[Repasse] Falha ao registrar a reabertura:', e.message); }
+            }
             await pool.query(`DELETE FROM ${tabelaSQL} WHERE id_firebase = ?`, [req.params.id]); 
         }
         res.json({ ok: true }); 
