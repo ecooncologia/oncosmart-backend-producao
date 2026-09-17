@@ -701,5 +701,14 @@ cron.schedule('0 1 1 * *', () => {
     executarRoboUnimed();
 });
 
-// Executa uma vez ao iniciar (Modo Teste/Start)
-executarRoboUnimed();
+// Reiniciar a API (ou um `pm2 restart`) nao pode disparar uma varredura: cada
+// rodada gasta creditos de anticaptcha. O robo agora so roda no horario agendado
+// (dia 01 de cada mes, 01:00).
+// Para forcar uma execucao imediata, de proposito:
+//    RODAR_AO_INICIAR=1 pm2 restart <nome-do-robo>   ou   node robo_unimed.js --agora
+if (process.argv.includes('--agora') || process.env.RODAR_AO_INICIAR === '1') {
+    console.log('▶️  Execução imediata solicitada (--agora / RODAR_AO_INICIAR).');
+    executarRoboUnimed();
+} else {
+    console.log('⏸️  Sem execução no boot — a próxima roda no horário agendado (dia 01 de cada mes, 01:00).');
+}

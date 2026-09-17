@@ -733,8 +733,17 @@ async function processarFilaPendentes() {
 // ==========================================
 console.log('🤖 Robô Iniciado (Versão Debian c/ Captura de Erro).');
 
-// Executa a primeira vez ao iniciar
-processarFilaPendentes();
+// Reiniciar a API (ou um `pm2 restart`) nao pode disparar uma varredura: cada
+// rodada gasta creditos de anticaptcha. O robo agora so roda no horario agendado
+// (a cada hora, no minuto 0).
+// Para forcar uma execucao imediata, de proposito:
+//    RODAR_AO_INICIAR=1 pm2 restart <nome-do-robo>   ou   node robo_unimed_debian_prod.js --agora
+if (process.argv.includes('--agora') || process.env.RODAR_AO_INICIAR === '1') {
+    console.log('▶️  Execução imediata solicitada (--agora / RODAR_AO_INICIAR).');
+    processarFilaPendentes();
+} else {
+    console.log('⏸️  Sem execução no boot — a próxima roda no horário agendado (a cada hora, no minuto 0).');
+}
 
 // Agendador (Cron) ativado para rodar a cada 1 hora no servidor
 cron.schedule('0 * * * *', () => { 
